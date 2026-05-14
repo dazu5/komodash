@@ -3,13 +3,15 @@
 //! Composition root only: wires module instances into the Tauri app state
 //! and registers `#[tauri::command]` handlers. Business logic lives in the
 //! sibling modules (`komorebic`, `command_catalog`, `diagnostic`,
-//! `installer`, `live_state`, future: `managed_config`, …).
+//! `installer`, `live_state`, `whkdrc_parser`, future: `managed_config`,
+//! …).
 
 pub mod command_catalog;
 pub mod diagnostic;
 pub mod installer;
 pub mod komorebic;
 pub mod live_state;
+pub mod whkdrc_parser;
 
 use std::path::PathBuf;
 use std::sync::Arc;
