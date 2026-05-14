@@ -38,6 +38,9 @@ semver = { version = "1", features = ["serde"] }
 tokio = { version = "1", features = ["net"] }
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Pipes", "Win32_Storage_FileSystem"] }
 
+[dev-dependencies]
+tempfile = "3"
+
 [profile.release]
 panic = "abort"
 codegen-units = 1

@@ -56,6 +56,11 @@ pub struct KomorebiState {
 
 /// The trait every consumer talks to. Implemented by [`WinKomorebic`] in
 /// production and by fakes in tests.
+///
+/// Path-discovery methods carry default `bail!` impls so that pre-existing
+/// fakes (e.g. the one in `#[cfg(test)]` for `discover` / `is_running`) keep
+/// compiling when new path methods are added. Real fakes that need to assert
+/// path behaviour should override.
 pub trait Komorebic: Send + Sync {
     /// Locate `komorebic.exe` and read its version. Returns `None` if the
     /// binary cannot be found or fails `--version`.
@@ -65,6 +70,24 @@ pub trait Komorebic: Send + Sync {
     /// alive on this machine. Independent of [`discover`]: the CLI binary
     /// can be present without the daemon running.
     fn is_running(&self) -> bool;
+
+    /// Path to the **Static configuration** file as reported by
+    /// `komorebic configuration`. Typically `~/komorebi.json`.
+    fn static_config_path(&self) -> Result<PathBuf> {
+        anyhow::bail!("static_config_path is not implemented for this Komorebic")
+    }
+
+    /// Path to the **Bar configuration** file as reported by
+    /// `komorebic bar-configuration`. Typically `~/komorebi.bar.json`.
+    fn bar_config_path(&self) -> Result<PathBuf> {
+        anyhow::bail!("bar_config_path is not implemented for this Komorebic")
+    }
+
+    /// Path to the `whkdrc` file as reported by `komorebic whkdrc`.
+    /// Typically `~/.config/whkdrc`.
+    fn whkdrc_path(&self) -> Result<PathBuf> {
+        anyhow::bail!("whkdrc_path is not implemented for this Komorebic")
+    }
 }
 
 /// Production implementation.
@@ -115,6 +138,55 @@ impl Komorebic for WinKomorebic {
                 .eq_ignore_ascii_case("komorebi.exe")
         })
     }
+
+    fn static_config_path(&self) -> Result<PathBuf> {
+        self.subcommand_path("configuration")
+    }
+
+    fn bar_config_path(&self) -> Result<PathBuf> {
+        self.subcommand_path("bar-configuration")
+    }
+
+    fn whkdrc_path(&self) -> Result<PathBuf> {
+        self.subcommand_path("whkdrc")
+    }
+}
+
+impl WinKomorebic {
+    /// Shell out to `komorebic <subcommand>` (one of the path-reporting
+    /// subcommands: `configuration`, `bar-configuration`, `whkdrc`) and
+    /// return the trimmed stdout as a `PathBuf`. Empty output is treated
+    /// as "the config file does not yet exist at the canonical path Komorebi
+    /// expects" — Komodash will still write to that path on first save.
+    ///
+    /// When the subcommand reports nothing, the canonical default for each
+    /// kind is returned. This mirrors `komorebic quickstart` behaviour, so
+    /// first-run Komodash on a clean machine can save somewhere sensible.
+    fn subcommand_path(&self, sub: &str) -> Result<PathBuf> {
+        let komorebic = self
+            .locate()
+            .ok_or_else(|| anyhow::anyhow!("komorebic.exe could not be located"))?;
+        let output = Command::new(&komorebic).arg(sub).output()?;
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !stdout.is_empty() {
+            return Ok(PathBuf::from(stdout));
+        }
+        // Empty stdout: fall back to the documented canonical path so we
+        // have a place to write.
+        canonical_path_for(sub)
+    }
+}
+
+/// Canonical default for each path subcommand when `komorebic` reports
+/// nothing (e.g. fresh install with no config yet written).
+fn canonical_path_for(sub: &str) -> Result<PathBuf> {
+    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("no home directory"))?;
+    Ok(match sub {
+        "configuration" => home.join("komorebi.json"),
+        "bar-configuration" => home.join("komorebi.bar.json"),
+        "whkdrc" => home.join(".config").join("whkdrc"),
+        other => anyhow::bail!("unknown path subcommand: {other}"),
+    })
 }
 
 /// Snapshot the current `(installed, running)` state. The default Komorebic
