@@ -21,6 +21,9 @@ src-tauri/gen/schemas
 # TypeScript incremental build artefacts
 *.tsbuildinfo
 
+# Local scratch — Matt-Pocock convention for ephemeral working files
+.scratch/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
