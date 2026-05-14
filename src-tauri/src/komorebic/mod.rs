@@ -1,0 +1,276 @@
+//! Wrapper around the `komorebic.exe` CLI.
+//!
+//! This is the only place in the codebase that knows where `komorebic.exe`
+//! lives, how to invoke it, and how to parse its output. Every other module
+//! talks to Komorebi through the [`Komorebic`] trait so the binary can be
+//! faked in tests.
+//!
+//! Per [ADR-0007](../../../docs/adr/0007-install-komorebi-via-winget.md),
+//! Komodash declares a minimum-supported Komorebi version
+//! ([`MIN_SUPPORTED_VERSION`]). Older installs surface as "unsupported"
+//! through [`KomorebicInfo::supported`] so the UI can prompt the user
+//! to upgrade.
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use anyhow::Result;
+use once_cell::sync::Lazy;
+use regex::Regex;
+use semver::Version;
+use serde::Serialize;
+
+/// Minimum-supported Komorebi version per ADR-0007.
+pub const MIN_SUPPORTED_VERSION: &str = "0.1.41";
+
+/// The two places Komodash looks for `komorebic.exe`, in priority order.
+///
+/// First `which()` is consulted (handles winget shim, Scoop shim, anything
+/// else on PATH); then the Komorebi installer's default location is checked
+/// as a fallback for users who installed but never restarted their shell.
+const FALLBACK_INSTALL_PATH: &str = r"C:\Program Files\komorebi\bin\komorebic.exe";
+
+/// `komorebic --version` first line: `komorebic 0.1.41`
+static VERSION_LINE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"^komorebic\s+(\d+\.\d+\.\d+)").expect("static regex compiles"));
+
+/// What [`Komorebic::discover`] returns when a working `komorebic.exe` is found.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct KomorebicInfo {
+    /// Absolute path to the binary we resolved.
+    pub path: PathBuf,
+    /// Parsed semver from `komorebic --version`.
+    pub version: String,
+    /// Whether `version >= MIN_SUPPORTED_VERSION` (see ADR-0007).
+    pub supported: bool,
+}
+
+/// What `detect_komorebi` returns to the frontend.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct KomorebiState {
+    /// `Some` iff a working `komorebic.exe` could be discovered.
+    pub installed: Option<KomorebicInfo>,
+    /// `true` iff `komorebi.exe` (the long-running WM process) is alive.
+    pub running: bool,
+}
+
+/// The trait every consumer talks to. Implemented by [`WinKomorebic`] in
+/// production and by fakes in tests.
+pub trait Komorebic: Send + Sync {
+    /// Locate `komorebic.exe` and read its version. Returns `None` if the
+    /// binary cannot be found or fails `--version`.
+    fn discover(&self) -> Option<KomorebicInfo>;
+
+    /// `true` iff the long-running `komorebi.exe` process is currently
+    /// alive on this machine. Independent of [`discover`]: the CLI binary
+    /// can be present without the daemon running.
+    fn is_running(&self) -> bool;
+}
+
+/// Production implementation.
+pub struct WinKomorebic;
+
+impl WinKomorebic {
+    /// Resolve `komorebic.exe` via PATH first, fallback path second.
+    fn locate(&self) -> Option<PathBuf> {
+        if let Ok(path) = which::which("komorebic.exe") {
+            return Some(path);
+        }
+        let fallback = PathBuf::from(FALLBACK_INSTALL_PATH);
+        fallback.exists().then_some(fallback)
+    }
+
+    /// Read `komorebic --version` and parse out the first-line version.
+    fn read_version(&self, path: &Path) -> Result<String> {
+        let output = Command::new(path).arg("--version").output()?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        parse_version(&stdout)
+            .ok_or_else(|| anyhow::anyhow!("could not parse version from komorebic --version"))
+    }
+}
+
+impl Komorebic for WinKomorebic {
+    fn discover(&self) -> Option<KomorebicInfo> {
+        let path = self.locate()?;
+        let version = self.read_version(&path).ok()?;
+        Some(KomorebicInfo {
+            supported: is_supported(&version),
+            path,
+            version,
+        })
+    }
+
+    fn is_running(&self) -> bool {
+        use sysinfo::{ProcessRefreshKind, RefreshKind, System};
+        // `new()` here = empty refresh spec (nothing kept by default); the
+        // builder then opts back into process-existence refresh. We don't
+        // need CPU/memory data — only the name list — so this is the
+        // cheapest refresh that still answers the question.
+        let sys = System::new_with_specifics(
+            RefreshKind::new().with_processes(ProcessRefreshKind::new()),
+        );
+        sys.processes().values().any(|p| {
+            p.name()
+                .to_string_lossy()
+                .eq_ignore_ascii_case("komorebi.exe")
+        })
+    }
+}
+
+/// Snapshot the current `(installed, running)` state. The default Komorebic
+/// impl ([`WinKomorebic`]) is wired in `lib.rs`; tests supply their own.
+pub fn detect(client: &dyn Komorebic) -> KomorebiState {
+    KomorebiState {
+        installed: client.discover(),
+        running: client.is_running(),
+    }
+}
+
+/// Extract `0.1.41` from `komorebic --version` output.
+///
+/// Public so the test module and any future tooling can reuse the same regex.
+pub fn parse_version(stdout: &str) -> Option<String> {
+    stdout
+        .lines()
+        .find_map(|line| VERSION_LINE.captures(line))
+        .and_then(|caps| caps.get(1).map(|m| m.as_str().to_string()))
+}
+
+/// `true` iff `version` is at least [`MIN_SUPPORTED_VERSION`].
+fn is_supported(version: &str) -> bool {
+    let min = Version::parse(MIN_SUPPORTED_VERSION).expect("min version is valid semver");
+    Version::parse(version).map(|v| v >= min).unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    /// Fake double for the [`Komorebic`] trait. Each method's return value
+    /// is configurable at construction time so individual tests stay
+    /// readable without builder overhead.
+    struct FakeKomorebic {
+        discover_result: Option<KomorebicInfo>,
+        is_running_result: bool,
+        discover_calls: Cell<u32>,
+    }
+
+    impl FakeKomorebic {
+        fn new(discover: Option<KomorebicInfo>, running: bool) -> Self {
+            Self {
+                discover_result: discover,
+                is_running_result: running,
+                discover_calls: Cell::new(0),
+            }
+        }
+    }
+
+    // SAFETY: the Cell makes FakeKomorebic non-Sync; this is fine for
+    // single-threaded test use. We unsafely impl Sync because the trait
+    // requires it and tests never share the fake across threads.
+    unsafe impl Sync for FakeKomorebic {}
+
+    impl Komorebic for FakeKomorebic {
+        fn discover(&self) -> Option<KomorebicInfo> {
+            self.discover_calls.set(self.discover_calls.get() + 1);
+            self.discover_result.clone()
+        }
+        fn is_running(&self) -> bool {
+            self.is_running_result
+        }
+    }
+
+    fn info(version: &str) -> KomorebicInfo {
+        KomorebicInfo {
+            path: PathBuf::from("C:/test/komorebic.exe"),
+            version: version.into(),
+            supported: is_supported(version),
+        }
+    }
+
+    #[test]
+    fn detect_reports_installed_and_running_when_both_true() {
+        let fake = FakeKomorebic::new(Some(info("0.1.41")), true);
+        let state = detect(&fake);
+        assert_eq!(state.installed.as_ref().map(|i| i.version.as_str()), Some("0.1.41"));
+        assert!(state.running);
+    }
+
+    #[test]
+    fn detect_reports_not_installed_when_discover_fails() {
+        let fake = FakeKomorebic::new(None, false);
+        let state = detect(&fake);
+        assert!(state.installed.is_none());
+        assert!(!state.running);
+    }
+
+    #[test]
+    fn detect_reports_installed_but_not_running() {
+        let fake = FakeKomorebic::new(Some(info("0.1.41")), false);
+        let state = detect(&fake);
+        assert!(state.installed.is_some());
+        assert!(!state.running);
+    }
+
+    #[test]
+    fn detect_invokes_discover_exactly_once_per_call() {
+        let fake = FakeKomorebic::new(Some(info("0.1.41")), true);
+        let _ = detect(&fake);
+        let _ = detect(&fake);
+        assert_eq!(fake.discover_calls.get(), 2);
+    }
+
+    #[test]
+    fn parses_version_from_real_komorebic_output() {
+        // The real `komorebic --version` output sampled from v0.1.41.
+        let stdout = "komorebic 0.1.41\ntag:v0.1.41\ncommit_hash:24c0ce0b\nbuild_time:2026-05-03 20:22:26 +00:00\nbuild_env:rustc 1.95.0 (59807616e 2026-04-14),stable-x86_64-pc-windows-msvc\n";
+        assert_eq!(parse_version(stdout), Some("0.1.41".into()));
+    }
+
+    #[test]
+    fn parses_version_from_minimal_output() {
+        assert_eq!(parse_version("komorebic 0.2.0\n"), Some("0.2.0".into()));
+    }
+
+    #[test]
+    fn returns_none_when_version_line_missing() {
+        assert_eq!(parse_version("garbage\nnonsense\n"), None);
+    }
+
+    #[test]
+    fn returns_none_on_empty_output() {
+        assert_eq!(parse_version(""), None);
+    }
+
+    #[test]
+    fn min_supported_version_is_supported() {
+        assert!(is_supported("0.1.41"));
+    }
+
+    #[test]
+    fn newer_version_is_supported() {
+        assert!(is_supported("0.2.0"));
+        assert!(is_supported("1.0.0"));
+    }
+
+    #[test]
+    fn older_version_is_not_supported() {
+        assert!(!is_supported("0.1.40"));
+        assert!(!is_supported("0.1.0"));
+    }
+
+    #[test]
+    fn malformed_version_is_not_supported() {
+        assert!(!is_supported("not-a-version"));
+        assert!(!is_supported(""));
+    }
+
+    #[test]
+    fn info_carries_supported_flag() {
+        let supported = info("0.1.41");
+        assert!(supported.supported);
+        let unsupported = info("0.1.40");
+        assert!(!unsupported.supported);
+    }
+}
