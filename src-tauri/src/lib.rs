@@ -2,9 +2,9 @@
 //!
 //! Composition root only: wires module instances into the Tauri app state
 //! and registers `#[tauri::command]` handlers. Business logic lives in the
-//! sibling modules (`komorebic`, `command_catalog`, `diag_log`,
-//! `installer`, `live_state`, `updates`, `whkdrc_parser`, future:
-//! `managed_config`, …).
+//! sibling modules (`komorebic`, `backup_store`, `command_catalog`,
+//! `diag_log`, `installer`, `live_state`, `managed_config`, `updates`,
+//! `whkdrc_parser`).
 //!
 //! `diag_log` is the file-logging + Copy-diagnostic-info module — named
 //! `diag_log` rather than `diagnostic` because the latter collides with
@@ -12,11 +12,13 @@
 //! that Tauri's `#[command]` macro emits for async commands taking
 //! `tauri::State` arguments.
 
+pub mod backup_store;
 pub mod command_catalog;
 pub mod diag_log;
 pub mod installer;
 pub mod komorebic;
 pub mod live_state;
+pub mod managed_config;
 pub mod updates;
 pub mod whkdrc_parser;
 
@@ -27,6 +29,7 @@ use std::time::Duration;
 use command_catalog::CommandCatalog;
 use installer::{InstallResult, PackageManager, PackageManagerKind};
 use komorebic::{Komorebic, KomorebiState, WinKomorebic};
+use managed_config::ConfigKind;
 use tauri::{AppHandle, Emitter, Manager};
 use updates::{
     cached_or_fresh, newer_than_bundled, GithubReleaseSource, ReleaseSource, UpdateInfo,
@@ -190,6 +193,73 @@ async fn check_komodash_update(
     }
 }
 
+// ---- Issue #7 --------------------------------------------------------------
+
+/// Read the live content of a Managed config from disk. Empty string when
+/// the file does not yet exist (caller renders appropriately).
+#[tauri::command]
+fn get_config(kind: ConfigKind, state: tauri::State<'_, AppState>) -> Result<String, String> {
+    let path = config_path_for(&state, kind).map_err(stringify_err)?;
+    managed_config::read(&path).map_err(stringify_err)
+}
+
+/// Write content to a Managed config. Atomic; previous content is backed
+/// up first per [ADR-0003](../../docs/adr/0003-sole-writer-non-technical-audience.md).
+#[tauri::command]
+fn write_config(
+    kind: ConfigKind,
+    content: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let path = config_path_for(&state, kind).map_err(stringify_err)?;
+    let backups = backups_root().map_err(stringify_err)?;
+    managed_config::write(&path, &content, kind, &backups).map_err(stringify_err)
+}
+
+/// Backups for `kind`, newest first.
+#[tauri::command]
+fn list_backups(kind: ConfigKind) -> Result<Vec<backup_store::BackupRecord>, String> {
+    let backups = backups_root().map_err(stringify_err)?;
+    managed_config::list_backups(&backups, kind).map_err(stringify_err)
+}
+
+/// Restore a backup into the live Managed config. The pre-restore content
+/// is itself backed up before overwrite so the user can undo a restore.
+#[tauri::command]
+fn restore_backup(
+    kind: ConfigKind,
+    id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let path = config_path_for(&state, kind).map_err(stringify_err)?;
+    let backups = backups_root().map_err(stringify_err)?;
+    managed_config::restore_backup(&backups, kind, &id, &path).map_err(stringify_err)
+}
+
+fn config_path_for(
+    state: &tauri::State<'_, AppState>,
+    kind: ConfigKind,
+) -> anyhow::Result<PathBuf> {
+    match kind {
+        ConfigKind::Static => state.komorebic.static_config_path(),
+        ConfigKind::Bar => state.komorebic.bar_config_path(),
+        ConfigKind::Whkdrc => state.komorebic.whkdrc_path(),
+    }
+}
+
+/// Root of Komodash's backup store: `%LOCALAPPDATA%\komodash\backups\`.
+fn backups_root() -> anyhow::Result<PathBuf> {
+    let local = dirs::data_local_dir()
+        .ok_or_else(|| anyhow::anyhow!("no LOCALAPPDATA directory"))?;
+    Ok(local.join("komodash").join("backups"))
+}
+
+/// `Result::map_err` companion: render any error chain as a string the
+/// frontend can show. Bubbles via Tauri serialisation.
+fn stringify_err<E: std::fmt::Display>(e: E) -> String {
+    e.to_string()
+}
+
 // ---- entrypoint ------------------------------------------------------------
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -238,6 +308,10 @@ pub fn run() {
             install_komorebi_via_winget,
             install_komorebi_via_scoop,
             check_komodash_update,
+            get_config,
+            write_config,
+            list_backups,
+            restore_backup,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
