@@ -56,6 +56,10 @@ pub struct KomorebiState {
 
 /// The trait every consumer talks to. Implemented by [`WinKomorebic`] in
 /// production and by fakes in tests.
+///
+/// `help()` / `help_for_subcommand()` carry default `bail!` impls so
+/// pre-existing fakes that only implement `discover` / `is_running`
+/// keep compiling.
 pub trait Komorebic: Send + Sync {
     /// Locate `komorebic.exe` and read its version. Returns `None` if the
     /// binary cannot be found or fails `--version`.
@@ -65,6 +69,18 @@ pub trait Komorebic: Send + Sync {
     /// alive on this machine. Independent of [`discover`]: the CLI binary
     /// can be present without the daemon running.
     fn is_running(&self) -> bool;
+
+    /// Raw stdout of `komorebic --help`. Used by the
+    /// [`crate::command_catalog`] builder to discover available subcommands.
+    fn help(&self) -> Result<String> {
+        anyhow::bail!("help is not implemented for this Komorebic")
+    }
+
+    /// Raw stdout of `komorebic <subcommand> --help`. Used by the
+    /// [`crate::command_catalog`] builder to learn per-subcommand args.
+    fn help_for_subcommand(&self, _subcommand: &str) -> Result<String> {
+        anyhow::bail!("help_for_subcommand is not implemented for this Komorebic")
+    }
 }
 
 /// Production implementation.
@@ -114,6 +130,39 @@ impl Komorebic for WinKomorebic {
                 .to_string_lossy()
                 .eq_ignore_ascii_case("komorebi.exe")
         })
+    }
+
+    fn help(&self) -> Result<String> {
+        self.run_help(&[])
+    }
+
+    fn help_for_subcommand(&self, subcommand: &str) -> Result<String> {
+        self.run_help(&[subcommand])
+    }
+}
+
+impl WinKomorebic {
+    /// Invoke `komorebic.exe [extra...] --help` and return its stdout as
+    /// a UTF-8 string. Used by both `help()` (no extra args) and
+    /// `help_for_subcommand()` (single subcommand name).
+    fn run_help(&self, extra: &[&str]) -> Result<String> {
+        let path = self
+            .locate()
+            .ok_or_else(|| anyhow::anyhow!("komorebic.exe could not be located"))?;
+        let mut cmd = Command::new(&path);
+        for arg in extra {
+            cmd.arg(arg);
+        }
+        cmd.arg("--help");
+        let output = cmd.output()?;
+        // clap writes help to stdout, but we accept either channel so a
+        // future tooling change doesn't silently break us.
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        if stdout.trim().is_empty() {
+            Ok(String::from_utf8_lossy(&output.stderr).to_string())
+        } else {
+            Ok(stdout)
+        }
     }
 }
 
