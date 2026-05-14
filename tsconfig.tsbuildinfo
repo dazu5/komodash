@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/main.tsx","./src/vite-env.d.ts","./src/components/page-shell.tsx","./src/lib/utils.ts","./src/pages/about.tsx","./src/pages/apprules.tsx","./src/pages/barconfig.tsx","./src/pages/config.tsx","./src/pages/dashboard.tsx","./src/pages/hotkeys.tsx"],"version":"5.8.3"}
