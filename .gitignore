@@ -18,6 +18,9 @@ src-tauri/target
 src-tauri/Cargo.lock
 src-tauri/gen/schemas
 
+# TypeScript incremental build artefacts
+*.tsbuildinfo
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
