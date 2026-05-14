@@ -3,12 +3,14 @@ import { Copy, Check } from "lucide-react";
 import { toast } from "sonner";
 
 import { PageHeader } from "@/components/page-shell";
+import { InstallPanel } from "@/components/install-panel";
 import { getDiagnosticInfo } from "@/api/diagnostic";
 import { cn } from "@/lib/utils";
 
 /**
  * About page. Project copy + the "Copy diagnostic info" affordance from
- * issue #10 (per ADR-0011 — local-only diagnostics, no telemetry).
+ * issue #10 (per ADR-0011 — local-only diagnostics, no telemetry) + the
+ * debug Install panel from issue #9.
  *
  * Clicking Copy fetches the markdown blob from Rust, writes it to the
  * system clipboard via the standard browser API (works in Tauri's webview
@@ -42,6 +44,7 @@ export default function AboutPage() {
       </div>
 
       <DiagnosticInfoCard />
+      <InstallPanel />
     </div>
   );
 }
