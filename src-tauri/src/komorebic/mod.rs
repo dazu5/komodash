@@ -57,9 +57,9 @@ pub struct KomorebiState {
 /// The trait every consumer talks to. Implemented by [`WinKomorebic`] in
 /// production and by fakes in tests.
 ///
-/// `help()` / `help_for_subcommand()` carry default `bail!` impls so
-/// pre-existing fakes that only implement `discover` / `is_running`
-/// keep compiling.
+/// `help()`, `help_for_subcommand()`, `subscribe_pipe`, and
+/// `unsubscribe_pipe` carry default-bail impls so pre-existing fakes
+/// that only implement `discover` / `is_running` keep compiling.
 pub trait Komorebic: Send + Sync {
     /// Locate `komorebic.exe` and read its version. Returns `None` if the
     /// binary cannot be found or fails `--version`.
@@ -80,6 +80,20 @@ pub trait Komorebic: Send + Sync {
     /// [`crate::command_catalog`] builder to learn per-subcommand args.
     fn help_for_subcommand(&self, _subcommand: &str) -> Result<String> {
         anyhow::bail!("help_for_subcommand is not implemented for this Komorebic")
+    }
+
+    /// Register a named-pipe subscriber with the running Komorebi.
+    /// `name` is the bare pipe name (no `\\.\pipe\` prefix). After
+    /// success, Komorebi will connect to `\\.\pipe\<name>` and write
+    /// JSON `Notification` events line-by-line.
+    fn subscribe_pipe(&self, _name: &str) -> Result<()> {
+        anyhow::bail!("subscribe_pipe is not implemented for this Komorebic")
+    }
+
+    /// Unregister a previously-subscribed pipe so Komorebi stops trying
+    /// to push to it. Idempotent at the Komorebic level.
+    fn unsubscribe_pipe(&self, _name: &str) -> Result<()> {
+        anyhow::bail!("unsubscribe_pipe is not implemented for this Komorebic")
     }
 }
 
@@ -139,6 +153,14 @@ impl Komorebic for WinKomorebic {
     fn help_for_subcommand(&self, subcommand: &str) -> Result<String> {
         self.run_help(&[subcommand])
     }
+
+    fn subscribe_pipe(&self, name: &str) -> Result<()> {
+        self.run_subcommand(&["subscribe-pipe", name])
+    }
+
+    fn unsubscribe_pipe(&self, name: &str) -> Result<()> {
+        self.run_subcommand(&["unsubscribe-pipe", name])
+    }
 }
 
 impl WinKomorebic {
@@ -163,6 +185,21 @@ impl WinKomorebic {
         } else {
             Ok(stdout)
         }
+    }
+
+    /// Shell out to `komorebic.exe <args...>` and surface any non-zero
+    /// exit as an error. Used by the pipe register / unregister methods
+    /// which don't need stdout, only success/failure.
+    fn run_subcommand(&self, args: &[&str]) -> Result<()> {
+        let path = self
+            .locate()
+            .ok_or_else(|| anyhow::anyhow!("komorebic.exe could not be located"))?;
+        let output = Command::new(&path).args(args).output()?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("komorebic {} failed: {}", args.join(" "), stderr.trim());
+        }
+        Ok(())
     }
 }
 
