@@ -28,7 +28,7 @@ Do **not** start writing implementation code until a PRD issue exists. Scaffold-
 
 ## Repo conventions
 
-- **Default branch:** `main`. Direct pushes to `main` are blocked — open a PR from a feature branch.
+- **Default branch:** `main`. Feature work (every commit made in service of a sliced issue, from issue #2 onwards) must land via a pull request from a feature branch. **Foundational pre-PRD commits** — the initial project scaffold and the repo-bones / grill-output that produced [issue #1](https://github.com/dazu5/komodash/issues/1) — were made before the issue tracker had a baseline to PR against and may push directly. From this PR convention onwards, no further direct pushes.
 - **Branch naming:** `<issue-number>-<short-slug>` (e.g. `7-named-pipe-subscription`), or `scaffold` / `repo-bones` for foundational work without an issue.
 - **Commits:** end every commit message with the project's `Co-Authored-By` line for the model.
 - **CONTEXT.md is a glossary only.** No specs, no scratch notes, no implementation details.
