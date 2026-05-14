@@ -19,7 +19,7 @@ use std::sync::Arc;
 use command_catalog::CommandCatalog;
 use installer::{InstallResult, PackageManager, PackageManagerKind};
 use komorebic::{Komorebic, KomorebiState, WinKomorebic};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 /// Things Tauri commands need at runtime. Held in `tauri::State`.
 pub struct AppState {
@@ -141,6 +141,18 @@ pub fn run() {
     let (state, komorebic_for_live) = AppState::production();
 
     tauri::Builder::default()
+        // Single-instance enforcement per ADR-0008. The mutex name
+        // `Local\komodash-singleton` is process-local to the current Windows
+        // session. On a second launch the closure runs in the EXISTING
+        // instance and brings its main window to the foreground; the new
+        // process exits cleanly.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_opener::init())
         .manage(state)
         .setup(move |app| {
