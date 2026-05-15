@@ -76,6 +76,27 @@ pub fn install_command(manager: PackageManagerKind) -> (&'static str, &'static [
     }
 }
 
+/// Pure: the `(binary, args)` Komodash invokes to **upgrade** an
+/// already-installed Komorebi via `manager`. The verb differs from
+/// `install_command` — winget uses `upgrade`, Scoop uses `update` —
+/// and Scoop's update only takes the package name (no bucket prefix).
+/// Issue #16.
+pub fn upgrade_command(manager: PackageManagerKind) -> (&'static str, &'static [&'static str]) {
+    match manager {
+        PackageManagerKind::Winget => (
+            "winget",
+            &[
+                "upgrade",
+                "LGUG2Z.komorebi",
+                "--silent",
+                "--accept-package-agreements",
+                "--accept-source-agreements",
+            ],
+        ),
+        PackageManagerKind::Scoop => ("scoop", &["update", "komorebi"]),
+    }
+}
+
 /// Run the install command synchronously. `on_line` is called once per
 /// line of combined stdout/stderr output, in the order it arrives.
 /// Returns an [`InstallResult`] reflecting the child's exit status.
@@ -83,23 +104,39 @@ pub fn install_command(manager: PackageManagerKind) -> (&'static str, &'static [
 /// Note: invoked from a `tokio::task::spawn_blocking` context by the
 /// Tauri command — this function itself is sync and does not need a
 /// runtime.
-pub fn install_komorebi<F>(manager: PackageManagerKind, mut on_line: F) -> Result<InstallResult>
+pub fn install_komorebi<F>(manager: PackageManagerKind, on_line: F) -> Result<InstallResult>
+where
+    F: FnMut(&str),
+{
+    let (cmd, args) = install_command(manager);
+    run_streaming(cmd, args, on_line)
+}
+
+/// Run the upgrade command synchronously. Same streaming semantics as
+/// [`install_komorebi`]. Issue #16.
+pub fn upgrade_komorebi<F>(manager: PackageManagerKind, on_line: F) -> Result<InstallResult>
+where
+    F: FnMut(&str),
+{
+    let (cmd, args) = upgrade_command(manager);
+    run_streaming(cmd, args, on_line)
+}
+
+/// Shared subprocess-with-streaming helper used by both install and
+/// upgrade paths. Reads stdout then stderr line by line.
+fn run_streaming<F>(cmd: &str, args: &[&str], mut on_line: F) -> Result<InstallResult>
 where
     F: FnMut(&str),
 {
     use std::io::{BufRead, BufReader};
     use std::process::{Command, Stdio};
 
-    let (cmd, args) = install_command(manager);
     let mut child = Command::new(cmd)
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
 
-    // Read stdout first, then stderr. winget and Scoop both write the
-    // user-visible progress lines to stdout; stderr is mostly empty in
-    // the happy path.
     if let Some(stdout) = child.stdout.take() {
         for line in BufReader::new(stdout).lines().flatten() {
             on_line(&line);
@@ -121,6 +158,32 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn winget_upgrade_uses_upgrade_verb() {
+        let (cmd, args) = upgrade_command(PackageManagerKind::Winget);
+        assert_eq!(cmd, "winget");
+        assert_eq!(args[0], "upgrade", "winget verb must be `upgrade`, not `install`");
+        assert!(args.contains(&"LGUG2Z.komorebi"));
+        // Silent + accept-* must be present for the same reason as install:
+        // an interactive prompt would hang the streaming reader forever.
+        assert!(args.contains(&"--silent"));
+        assert!(args.contains(&"--accept-package-agreements"));
+    }
+
+    #[test]
+    fn scoop_upgrade_uses_update_verb_and_bare_name() {
+        let (cmd, args) = upgrade_command(PackageManagerKind::Scoop);
+        assert_eq!(cmd, "scoop");
+        assert_eq!(args[0], "update");
+        // Scoop's `update` takes the bare package name, not the bucket/name
+        // form `install` accepts. Drifting from that would just no-op.
+        assert_eq!(args[1], "komorebi");
+        assert!(
+            !args.contains(&"extras/komorebi"),
+            "scoop update takes bare name; bucket prefix is for install only"
+        );
+    }
 
     #[test]
     fn winget_install_command_is_silent_and_accepts_agreements() {
