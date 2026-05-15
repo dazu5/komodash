@@ -1,0 +1,10 @@
+# whkdrc with interleaved comments — fixture for whkdrc_parser tests.
+
+# Focus the left window
+alt + h : komorebic focus left
+
+# Focus the right window
+alt + l : komorebic focus right
+
+# Reload the running configuration
+alt + shift + r : komorebic reload-configuration
