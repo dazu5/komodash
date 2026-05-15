@@ -183,6 +183,40 @@ where
         .map_err(|e| e.to_string())
 }
 
+// ---- Issue #15 -------------------------------------------------------------
+
+/// Start the Komorebi daemon (issue #15). `with_whkd` / `with_bar` are
+/// `true` by default from the frontend so the user's hotkeys and status
+/// bar come up alongside Komorebi.
+///
+/// Returns once `komorebic start` exits. Komorebi is still warming up at
+/// that point — the frontend waits for the **Live state** subscription
+/// to reconnect (within ~2s) to know it's actually serving.
+#[tauri::command]
+async fn start_komorebi(
+    state: tauri::State<'_, AppState>,
+    with_whkd: bool,
+    with_bar: bool,
+) -> Result<(), String> {
+    let client = state.komorebic.clone();
+    tokio::task::spawn_blocking(move || client.start(with_whkd, with_bar))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+/// Stop the Komorebi daemon (issue #15). Idempotent at the Komorebic
+/// layer — calling this when Komorebi is not running succeeds quietly.
+/// Used by Restart (after a crash) and as a standalone affordance.
+#[tauri::command]
+async fn stop_komorebi(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let client = state.komorebic.clone();
+    tokio::task::spawn_blocking(move || client.stop())
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
 // ---- Issue #9 --------------------------------------------------------------
 
 /// Detected host package managers, in preference order (winget first,
@@ -508,6 +542,8 @@ pub fn run() {
             toggle_float_override,
             retile,
             focus_workspace,
+            start_komorebi,
+            stop_komorebi,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
