@@ -61,8 +61,8 @@ pub struct KomorebiState {
 /// `unsubscribe_pipe`, `static_config_path`, `bar_config_path`,
 /// `whkdrc_path`, `static_config_schema`, `toggle_pause`,
 /// `toggle_mouse_follows_focus`, `toggle_float_override`, `retile`,
-/// `focus_workspace`, `start`, `stop`) carry default-bail impls so
-/// pre-existing fakes that only implement
+/// `focus_workspace`, `start`, `stop`, `replace_configuration`) carry
+/// default-bail impls so pre-existing fakes that only implement
 /// `discover` / `is_running` keep compiling.
 pub trait Komorebic: Send + Sync {
     /// Locate `komorebic.exe` and read its version. Returns `None` if the
@@ -182,6 +182,17 @@ pub trait Komorebic: Send + Sync {
     /// and by the Dashboard's Stop affordance.
     fn stop(&self) -> Result<()> {
         anyhow::bail!("stop is not implemented for this Komorebic")
+    }
+
+    /// Tell the running Komorebi daemon to reload the Static configuration
+    /// from disk (hot-reload, per ADR-0006). Called after every settled
+    /// edit in the Live-apply path (issue #18). The path is the live
+    /// `komorebi.json` location; Komorebi reads it on this call.
+    ///
+    /// Errors surface verbatim — the frontend translates them into
+    /// friendly inline messages.
+    fn replace_configuration(&self, _path: &Path) -> Result<()> {
+        anyhow::bail!("replace_configuration is not implemented for this Komorebic")
     }
 }
 
@@ -328,6 +339,13 @@ impl Komorebic for WinKomorebic {
             "komorebic stop failed: {}",
             String::from_utf8_lossy(&output.stderr).trim()
         );
+    }
+
+    fn replace_configuration(&self, config_path: &Path) -> Result<()> {
+        let config_str = config_path
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("config path is not valid UTF-8"))?;
+        self.run_subcommand(&["replace-configuration", config_str])
     }
 }
 
