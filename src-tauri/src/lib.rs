@@ -35,6 +35,7 @@ use hotkey_validator::ReservedChordList;
 use installer::{InstallResult, PackageManager, PackageManagerKind};
 use komorebic::{Komorebic, KomorebiState, WinKomorebic};
 use managed_config::ConfigKind;
+use std::collections::HashSet;
 use schema_cache::SchemaCache;
 use tauri::{AppHandle, Emitter, Manager};
 use whkdrc_parser::Chord;
@@ -247,6 +248,48 @@ fn restore_backup(
     managed_config::restore_backup(&backups, kind, &id, &path).map_err(stringify_err)
 }
 
+// ---- Issue #17: robust Static-config R/W -----------------------------------
+
+/// Write the Static configuration with the merged-preservation semantics
+/// from #17. The editor passes its current working buffer (`edits`) plus
+/// the **set of top-level keys it actually touched** (`touched_fields`);
+/// every other top-level key on disk is preserved verbatim — so a
+/// **Power user** who has fields a future Komorebi version recognises
+/// can't accidentally strip them by saving.
+#[tauri::command]
+fn write_static_config_merged(
+    edits: serde_json::Value,
+    touched_fields: Vec<String>,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let path = config_path_for(&state, ConfigKind::Static).map_err(stringify_err)?;
+    let backups = backups_root().map_err(stringify_err)?;
+    let set: HashSet<String> = touched_fields.into_iter().collect();
+    managed_config::write_static_config_merged(&path, &edits, &set, &backups)
+        .map_err(stringify_err)
+}
+
+/// Return the list of top-level keys in the current Static configuration
+/// that aren't declared in the JSON Schema. Backs the "your current
+/// Komorebi version doesn't recognise these fields — they will be
+/// preserved as-is" banner on the Configuration page.
+#[tauri::command]
+fn detect_unknown_fields(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    let path = config_path_for(&state, ConfigKind::Static).map_err(stringify_err)?;
+    let content = managed_config::read_with_kind(&path, Some(ConfigKind::Static))
+        .map_err(stringify_err)?;
+    if content.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let schema = state
+        .schema_cache
+        .load(state.komorebic.as_ref())
+        .map_err(stringify_err)?;
+    managed_config::detect_unknown_top_level_fields(&content, &schema).map_err(stringify_err)
+}
+
 // ---- Issue #11 -------------------------------------------------------------
 
 /// Return the **Static configuration** JSON Schema for the currently-installed
@@ -363,6 +406,8 @@ pub fn run() {
             get_schema,
             get_field_catalog,
             get_reserved_chords,
+            write_static_config_merged,
+            detect_unknown_fields,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

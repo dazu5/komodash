@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Code2, FormInput, RotateCcw } from "lucide-react";
+import { Code2, FormInput, Info, RotateCcw } from "lucide-react";
 import CodeMirror from "@uiw/react-codemirror";
 import { json } from "@codemirror/lang-json";
 import { vscodeDark } from "@uiw/codemirror-theme-vscode";
@@ -8,6 +8,7 @@ import { toast } from "sonner";
 import { PageHeader } from "@/components/page-shell";
 import { SchemaEditor } from "@/components/schema-editor";
 import {
+  detectUnknownFields,
   getConfig,
   listBackups,
   restoreBackup,
@@ -21,7 +22,7 @@ import { getSchema, type JsonSchema } from "@/api/schema";
 import { cn } from "@/lib/utils";
 
 /**
- * The Configuration page (issues #7 + #11).
+ * The Configuration page (issues #7 + #11 + #17).
  *
  * Default view is the **schema-driven editor** in read-only mode, using
  * the Field-catalog overlay for friendly labels. A "Raw JSON" toggle
@@ -29,12 +30,15 @@ import { cn } from "@/lib/utils";
  * the literal file. The backups sidebar stays in either mode.
  *
  * Live-apply editing arrives in #18; the editor renders disabled inputs
- * here.
+ * here. Issue #17 adds an "unknown fields" banner that warns the user
+ * that fields their currently-installed Komorebi doesn't recognise are
+ * being preserved on save (typically after a Komorebi downgrade).
  */
 export default function ConfigPage() {
   const { content, refresh: refreshContent, error } = useStaticConfig();
   const { backups, refresh: refreshBackups } = useBackups();
   const { schema, catalog, error: schemaError } = useSchemaSurface();
+  const unknownFields = useUnknownFields(content);
   const [view, setView] = useState<"form" | "raw">("form");
 
   const onRestore = useCallback(
@@ -59,6 +63,10 @@ export default function ConfigPage() {
         title="Configuration"
         subtitle="komorebi.json — read-only for now; live editing lands in a later slice."
       />
+
+      {unknownFields.length > 0 && (
+        <UnknownFieldsBanner fields={unknownFields} />
+      )}
 
       <div className="flex items-center gap-2">
         <ViewToggle view={view} onChange={setView} />
@@ -218,6 +226,35 @@ function LoadingPanel({ label }: { label: string }) {
   );
 }
 
+/**
+ * Banner shown on the Configuration page when the live `komorebi.json`
+ * contains top-level keys the currently-installed Komorebi schema
+ * doesn't declare (issue #17). Typical cause: the user downgraded
+ * Komorebi. Komodash will preserve those fields on save, so the user
+ * loses nothing — the banner is a heads-up, not a warning.
+ */
+function UnknownFieldsBanner({ fields }: { fields: string[] }) {
+  return (
+    <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
+      <Info className="h-4 w-4 mt-0.5 shrink-0" />
+      <div className="space-y-0.5">
+        <div className="font-medium">
+          This config has fields your current Komorebi version doesn't
+          recognise — they will be preserved as-is.
+        </div>
+        <div className="text-xs opacity-80">
+          {fields.map((f, i) => (
+            <span key={f}>
+              <code className="rounded bg-amber-500/20 px-1.5 py-0.5">{f}</code>
+              {i < fields.length - 1 ? ", " : ""}
+            </span>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ---- hooks -----------------------------------------------------------------
 
 function useStaticConfig() {
@@ -297,6 +334,34 @@ function useParsedConfig(content: string | null): Record<string, unknown> | null
   } catch {
     return null;
   }
+}
+
+/**
+ * Fetch the list of unknown top-level fields whenever the live config
+ * content changes (issue #17). Errors are swallowed silently — the
+ * banner is a heads-up, not a hard requirement; we never want to fail
+ * the page over its detection.
+ */
+function useUnknownFields(content: string | null): string[] {
+  const [fields, setFields] = useState<string[]>([]);
+  useEffect(() => {
+    if (!content) {
+      setFields([]);
+      return;
+    }
+    let cancelled = false;
+    detectUnknownFields()
+      .then((list: string[]) => {
+        if (!cancelled) setFields(list);
+      })
+      .catch(() => {
+        if (!cancelled) setFields([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [content]);
+  return fields;
 }
 
 // ---- helpers ---------------------------------------------------------------

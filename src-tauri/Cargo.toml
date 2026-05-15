@@ -35,6 +35,10 @@ sysinfo = { version = "0.32", default-features = false, features = ["system"] }
 semver = { version = "1", features = ["serde"] }
 tracing-appender = "0.2"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
+# Tolerant JSON parser for the Static-config read fallback (issue #17 /
+# ADR-0003): we accept JSON5-style trailing commas + comments on read,
+# always re-emit canonical JSON on write.
+json5 = "0.4"
 
 [dev-dependencies]
 tempfile = "3"
