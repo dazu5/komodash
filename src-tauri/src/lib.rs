@@ -3,12 +3,13 @@
 //! Composition root only: wires module instances into the Tauri app state
 //! and registers `#[tauri::command]` handlers. Business logic lives in the
 //! sibling modules (`komorebic`, `command_catalog`, `diagnostic`,
-//! `installer`, future: `live_state`, `managed_config`, …).
+//! `installer`, `live_state`, future: `managed_config`, …).
 
 pub mod command_catalog;
 pub mod diagnostic;
 pub mod installer;
 pub mod komorebic;
+pub mod live_state;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -25,10 +26,12 @@ pub struct AppState {
 
 impl AppState {
     /// Production wiring: real `komorebic.exe` shell-out + real process scan.
-    fn production() -> Self {
-        Self {
-            komorebic: Arc::new(WinKomorebic),
-        }
+    fn production() -> (Self, Arc<dyn Komorebic>) {
+        let komorebic: Arc<dyn Komorebic> = Arc::new(WinKomorebic);
+        let state = Self {
+            komorebic: komorebic.clone(),
+        };
+        (state, komorebic)
     }
 }
 
@@ -133,9 +136,18 @@ pub fn run() {
         }
     };
 
+    let (state, komorebic_for_live) = AppState::production();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .manage(AppState::production())
+        .manage(state)
+        .setup(move |app| {
+            // Spawn the live-state subscriber once the app is ready
+            // (issue #6). The task lives for the lifetime of the process
+            // and reconnects on its own — no shutdown handling for v1.
+            live_state::spawn(app.handle().clone(), komorebic_for_live.clone());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             detect_komorebi,
             get_diagnostic_info,
