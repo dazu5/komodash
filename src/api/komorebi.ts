@@ -49,3 +49,18 @@ export async function toggleFloatOverride(): Promise<void> {
 export async function retile(): Promise<void> {
   await invoke<void>("retile");
 }
+
+/**
+ * Focus a workspace on a monitor (issue #13). Indices are zero-based
+ * and must match the order Komorebi reports in the Live state snapshot —
+ * the Dashboard tree passes them straight through.
+ *
+ * The Live state subscription delivers the resulting state update
+ * within ~100 ms; the caller does not need to re-fetch state manually.
+ */
+export async function focusWorkspace(
+  monitorIndex: number,
+  workspaceIndex: number,
+): Promise<void> {
+  await invoke<void>("focus_workspace", { monitorIndex, workspaceIndex });
+}

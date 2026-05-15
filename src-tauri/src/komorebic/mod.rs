@@ -60,8 +60,9 @@ pub struct KomorebiState {
 /// All optional methods (`help`, `help_for_subcommand`, `subscribe_pipe`,
 /// `unsubscribe_pipe`, `static_config_path`, `bar_config_path`,
 /// `whkdrc_path`, `static_config_schema`, `toggle_pause`,
-/// `toggle_mouse_follows_focus`, `toggle_float_override`, `retile`)
-/// carry default-bail impls so pre-existing fakes that only implement
+/// `toggle_mouse_follows_focus`, `toggle_float_override`, `retile`,
+/// `focus_workspace`) carry default-bail impls so pre-existing fakes
+/// that only implement
 /// `discover` / `is_running` keep compiling.
 pub trait Komorebic: Send + Sync {
     /// Locate `komorebic.exe` and read its version. Returns `None` if the
@@ -152,6 +153,15 @@ pub trait Komorebic: Send + Sync {
     /// resolution change). Idempotent and fast.
     fn retile(&self) -> Result<()> {
         anyhow::bail!("retile is not implemented for this Komorebic")
+    }
+
+    /// Focus the workspace at `workspace_index` on the monitor at
+    /// `monitor_index`. Both indices are zero-based and match the
+    /// `Ring<Workspace>.elements` order in the **Live state**
+    /// snapshot — so the Dashboard tree can pass them through directly
+    /// (issue #13).
+    fn focus_workspace(&self, _monitor_index: usize, _workspace_index: usize) -> Result<()> {
+        anyhow::bail!("focus_workspace is not implemented for this Komorebic")
     }
 }
 
@@ -260,6 +270,12 @@ impl Komorebic for WinKomorebic {
 
     fn retile(&self) -> Result<()> {
         self.run_subcommand(&["retile"])
+    }
+
+    fn focus_workspace(&self, monitor_index: usize, workspace_index: usize) -> Result<()> {
+        let monitor = monitor_index.to_string();
+        let workspace = workspace_index.to_string();
+        self.run_subcommand(&["focus-workspace", &monitor, &workspace])
     }
 }
 

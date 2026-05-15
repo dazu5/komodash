@@ -1,15 +1,20 @@
 import { useEffect, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
+import { toast } from "sonner";
 
 import { PageHeader } from "@/components/page-shell";
 import { QuickToggleRow } from "@/components/quick-toggles";
 import { StatusPill } from "@/components/status-pill";
-import { detectKomorebi, type KomorebiState } from "@/api/komorebi";
+import {
+  detectKomorebi,
+  focusWorkspace,
+  type KomorebiState,
+} from "@/api/komorebi";
 import { useLiveState, type LiveStateStatus } from "@/stores/live-state";
 import { cn } from "@/lib/utils";
 
 /**
- * The Dashboard page (issues #2 + #6 + #14). Shows:
+ * The Dashboard page (issues #2 + #6 + #13 + #14). Shows:
  *
  * - Status pill: detection / running state from the one-shot
  *   `detect_komorebi` invoke (issue #2).
@@ -18,9 +23,12 @@ import { cn } from "@/lib/utils";
  *   command that delegates to `komorebic toggle-*` / `komorebic retile`.
  * - Live state tree: Monitor → Workspace → Container → Window,
  *   updated in real time from the named-pipe subscription (issue #6).
+ * - Click a Workspace row to focus it via `komorebic focus-workspace`
+ *   (issue #13). The Live state subscription delivers the resulting
+ *   focus change within ~100 ms; the UI updates automatically.
  *
- * Workspace click (issue #13), window context menus (issue #26), and
- * start/stop buttons (issue #15) land in their own slices.
+ * Window context menus (issue #26) and start/stop buttons (issue #15)
+ * land in their own slices.
  */
 export default function DashboardPage() {
   const detection = useKomorebiDetection();
@@ -105,6 +113,7 @@ function LiveStateTree({
 function MonitorRow({ monitor, index }: { monitor: unknown; index: number }) {
   const name = getString(monitor, "name") ?? `Monitor ${index + 1}`;
   const workspaces = getWorkspaces(monitor);
+  const focusedWs = getRingFocused(monitor, "workspaces");
   return (
     <section className="rounded-lg border border-border bg-card overflow-hidden">
       <header className="flex items-center justify-between bg-secondary/50 px-3 py-1.5 text-xs">
@@ -118,8 +127,9 @@ function MonitorRow({ monitor, index }: { monitor: unknown; index: number }) {
           <WorkspaceRow
             key={getString(w, "name") ?? `ws-${j}`}
             workspace={w}
-            index={j}
-            focused={getRingFocused(monitor, "workspaces") === j}
+            monitorIndex={index}
+            workspaceIndex={j}
+            focused={focusedWs === j}
           />
         ))}
       </ul>
@@ -129,48 +139,87 @@ function MonitorRow({ monitor, index }: { monitor: unknown; index: number }) {
 
 function WorkspaceRow({
   workspace,
-  index,
+  monitorIndex,
+  workspaceIndex,
   focused,
 }: {
   workspace: unknown;
-  index: number;
+  monitorIndex: number;
+  workspaceIndex: number;
   focused: boolean;
 }) {
+  // Focused workspaces start expanded — the user just navigated there,
+  // they probably want to see what's inside.
   const [open, setOpen] = useState(focused);
-  const name = getString(workspace, "name") ?? `Workspace ${index + 1}`;
+  const name = getString(workspace, "name") ?? `Workspace ${workspaceIndex + 1}`;
   const containers = getContainers(workspace);
   const windowCount = containers
     .map((c) => getWindows(c).length)
     .reduce((a, b) => a + b, 0);
 
+  const onFocus = async () => {
+    if (focused) {
+      // Already focused — just toggle the expand state. Saves a round-trip.
+      setOpen((v) => !v);
+      return;
+    }
+    try {
+      await focusWorkspace(monitorIndex, workspaceIndex);
+      // Optimistic open: the Live state update will arrive within ~100ms
+      // and re-render the focused styling; the open state is local.
+      setOpen(true);
+    } catch (e) {
+      toast.error(
+        `Couldn't focus workspace: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  };
+
   return (
     <li>
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
+      <div
         className={cn(
-          "w-full flex items-center gap-2 px-3 py-2 text-left text-sm",
+          "flex items-center gap-1 text-sm",
           "hover:bg-secondary/40 transition-colors",
           focused && "bg-secondary/30",
         )}
       >
-        {open ? (
-          <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
-        ) : (
-          <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
-        )}
-        <span className={cn("font-medium", focused && "text-foreground")}>
-          {name}
-        </span>
-        {focused && (
-          <span className="text-[10px] uppercase tracking-wide text-emerald-400/80">
-            focused
+        <button
+          type="button"
+          onClick={(e) => {
+            // Stop the click from bubbling to the focus button.
+            e.stopPropagation();
+            setOpen((v) => !v);
+          }}
+          aria-label={open ? "Collapse workspace" : "Expand workspace"}
+          className="px-2 py-2 hover:bg-secondary/40 transition-colors"
+        >
+          {open ? (
+            <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
+          ) : (
+            <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
+          )}
+        </button>
+        <button
+          type="button"
+          onClick={onFocus}
+          aria-pressed={focused}
+          title={focused ? "Already focused" : `Focus ${name}`}
+          className="flex-1 flex items-center gap-2 py-2 pr-3 text-left"
+        >
+          <span className={cn("font-medium", focused && "text-foreground")}>
+            {name}
           </span>
-        )}
-        <span className="ml-auto text-xs text-muted-foreground">
-          {windowCount} window{windowCount === 1 ? "" : "s"}
-        </span>
-      </button>
+          {focused && (
+            <span className="text-[10px] uppercase tracking-wide text-emerald-400/80">
+              focused
+            </span>
+          )}
+          <span className="ml-auto text-xs text-muted-foreground">
+            {windowCount} window{windowCount === 1 ? "" : "s"}
+          </span>
+        </button>
+      </div>
       {open && (
         <ul className="pb-2 pl-9 pr-3 space-y-1">
           {containers.length === 0 ? (

@@ -119,6 +119,25 @@ fn command_catalog_cache_path() -> anyhow::Result<PathBuf> {
     Ok(dir.join("komodash").join("command-catalog.json"))
 }
 
+// ---- Issue #13 -------------------------------------------------------------
+
+/// Focus the workspace at (monitor_index, workspace_index) — both
+/// zero-based, matching the Ring<Workspace>.elements order in the Live
+/// state snapshot. The Dashboard tree calls this when the **End user**
+/// clicks a Workspace row.
+#[tauri::command]
+async fn focus_workspace(
+    state: tauri::State<'_, AppState>,
+    monitor_index: usize,
+    workspace_index: usize,
+) -> Result<(), String> {
+    let client = state.komorebic.clone();
+    tokio::task::spawn_blocking(move || client.focus_workspace(monitor_index, workspace_index))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
 // ---- Issue #14: quick-toggle row + Retile ----------------------------------
 
 /// Toggle Komorebi's global pause state. Runtime-only; the static config
@@ -488,6 +507,7 @@ pub fn run() {
             toggle_mouse_follows_focus,
             toggle_float_override,
             retile,
+            focus_workspace,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
