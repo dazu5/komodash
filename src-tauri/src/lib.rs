@@ -2,36 +2,59 @@
 //!
 //! Composition root only: wires module instances into the Tauri app state
 //! and registers `#[tauri::command]` handlers. Business logic lives in the
-//! sibling modules (`komorebic`, `command_catalog`, `diagnostic`,
-//! `installer`, `live_state`, `whkdrc_parser`, future: `managed_config`,
-//! …).
+//! sibling modules (`komorebic`, `command_catalog`, `diag_log`,
+//! `installer`, `live_state`, `updates`, `whkdrc_parser`, future:
+//! `managed_config`, …).
+//!
+//! `diag_log` is the file-logging + Copy-diagnostic-info module — named
+//! `diag_log` rather than `diagnostic` because the latter collides with
+//! Rust 1.78's stable `diagnostic::on_unimplemented` attribute namespace
+//! that Tauri's `#[command]` macro emits for async commands taking
+//! `tauri::State` arguments.
 
 pub mod command_catalog;
-pub mod diagnostic;
+pub mod diag_log;
 pub mod installer;
 pub mod komorebic;
 pub mod live_state;
+pub mod updates;
 pub mod whkdrc_parser;
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use command_catalog::CommandCatalog;
 use installer::{InstallResult, PackageManager, PackageManagerKind};
 use komorebic::{Komorebic, KomorebiState, WinKomorebic};
 use tauri::{AppHandle, Emitter, Manager};
+use updates::{
+    cached_or_fresh, newer_than_bundled, GithubReleaseSource, ReleaseSource, UpdateInfo,
+};
+
+/// 24 hours, per ADR-0011: we poll the GitHub releases API at most once
+/// a day to avoid hammering it and to keep the launch fast.
+const UPDATE_CACHE_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// Things Tauri commands need at runtime. Held in `tauri::State`.
 pub struct AppState {
     pub komorebic: Arc<dyn Komorebic>,
+    pub release_source: Arc<dyn ReleaseSource>,
 }
 
 impl AppState {
-    /// Production wiring: real `komorebic.exe` shell-out + real process scan.
+    /// Production wiring: real `komorebic.exe` shell-out + real process
+    /// scan, real GitHub API call for the update check.
     fn production() -> (Self, Arc<dyn Komorebic>) {
         let komorebic: Arc<dyn Komorebic> = Arc::new(WinKomorebic);
+        let user_agent = format!("komodash/{}", env!("CARGO_PKG_VERSION"));
         let state = Self {
             komorebic: komorebic.clone(),
+            release_source: Arc::new(GithubReleaseSource {
+                owner: "dazu5".into(),
+                repo: "komodash".into(),
+                user_agent,
+            }),
         };
         (state, komorebic)
     }
@@ -52,7 +75,7 @@ fn detect_komorebi(state: tauri::State<'_, AppState>) -> KomorebiState {
 /// (issue #10, per ADR-0011 — local-only, no telemetry).
 #[tauri::command]
 fn get_diagnostic_info(state: tauri::State<'_, AppState>) -> String {
-    diagnostic::build_diagnostic_info(state.komorebic.as_ref())
+    diag_log::build_diagnostic_info(state.komorebic.as_ref())
 }
 
 // ---- Issue #8 --------------------------------------------------------------
@@ -122,6 +145,51 @@ async fn run_install(
     .map_err(|e| e.to_string())
 }
 
+// ---- Issue #5 --------------------------------------------------------------
+
+/// Check whether a newer Komodash release exists on GitHub. Backs the
+/// in-app update banner (issue #5, per ADR-0011).
+///
+/// Any failure — no cache dir, network down, malformed response — is
+/// swallowed and surfaces as `None`. The banner *should not* nag the
+/// user with error states; it either appears or it doesn't.
+#[tauri::command]
+async fn check_komodash_update(
+    state: tauri::State<'_, AppState>,
+) -> Result<Option<UpdateInfo>, String> {
+    // Clone the Arc so we can move it into the blocking task. Network and
+    // file I/O are sync (reqwest blocking, fs::read), so we run them on
+    // tokio's blocking pool and return `None` on any failure.
+    let source = state.release_source.clone();
+    let bundled = env!("CARGO_PKG_VERSION");
+
+    let result = tokio::task::spawn_blocking(move || {
+        let cache_path = match dirs::data_local_dir() {
+            Some(dir) => dir.join("komodash").join("update-cache.json"),
+            None => {
+                tracing::debug!("no LOCALAPPDATA available; skipping update check");
+                return Ok::<Option<UpdateInfo>, anyhow::Error>(None);
+            }
+        };
+        let release =
+            cached_or_fresh(&cache_path, UPDATE_CACHE_MAX_AGE, || source.fetch_latest())?;
+        Ok(newer_than_bundled(&release, bundled))
+    })
+    .await;
+
+    match result {
+        Ok(Ok(maybe)) => Ok(maybe),
+        Ok(Err(err)) => {
+            tracing::debug!("update check failed: {err:?}");
+            Ok(None)
+        }
+        Err(join_err) => {
+            tracing::debug!("update check task panicked: {join_err:?}");
+            Ok(None)
+        }
+    }
+}
+
 // ---- entrypoint ------------------------------------------------------------
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -130,7 +198,7 @@ pub fn run() {
     // must live for the lifetime of `run` so the background flusher keeps
     // running. We bind it to `_log_guard` rather than discarding to `_` so
     // it isn't dropped immediately.
-    let _log_guard = match diagnostic::init_tracing() {
+    let _log_guard = match diag_log::init_tracing() {
         Ok(guard) => guard,
         Err(err) => {
             eprintln!("komodash: failed to initialise file logging: {err}");
@@ -169,6 +237,7 @@ pub fn run() {
             available_package_managers,
             install_komorebi_via_winget,
             install_komorebi_via_scoop,
+            check_komodash_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
