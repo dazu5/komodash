@@ -59,8 +59,9 @@ pub struct KomorebiState {
 ///
 /// All optional methods (`help`, `help_for_subcommand`, `subscribe_pipe`,
 /// `unsubscribe_pipe`, `static_config_path`, `bar_config_path`,
-/// `whkdrc_path`) carry default-bail impls so pre-existing fakes that
-/// only implement `discover` / `is_running` keep compiling.
+/// `whkdrc_path`, `static_config_schema`) carry default-bail impls so
+/// pre-existing fakes that only implement `discover` / `is_running` keep
+/// compiling.
 pub trait Komorebic: Send + Sync {
     /// Locate `komorebic.exe` and read its version. Returns `None` if the
     /// binary cannot be found or fails `--version`.
@@ -113,6 +114,14 @@ pub trait Komorebic: Send + Sync {
     /// Typically `~/.config/whkdrc`.
     fn whkdrc_path(&self) -> Result<PathBuf> {
         anyhow::bail!("whkdrc_path is not implemented for this Komorebic")
+    }
+
+    /// Raw JSON Schema for the **Static configuration** as emitted by
+    /// `komorebic static-config-schema`. The string is returned verbatim
+    /// so the schema cache can stash it and Komodash never tries to
+    /// reshape what Komorebi publishes (per ADR-0002).
+    fn static_config_schema(&self) -> Result<String> {
+        anyhow::bail!("static_config_schema is not implemented for this Komorebic")
     }
 }
 
@@ -191,6 +200,20 @@ impl Komorebic for WinKomorebic {
 
     fn whkdrc_path(&self) -> Result<PathBuf> {
         self.subcommand_path("whkdrc")
+    }
+
+    fn static_config_schema(&self) -> Result<String> {
+        let path = self
+            .locate()
+            .ok_or_else(|| anyhow::anyhow!("komorebic.exe could not be located"))?;
+        let output = Command::new(&path).arg("static-config-schema").output()?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "komorebic static-config-schema failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
 }
 

@@ -1,29 +1,41 @@
 import { useCallback, useEffect, useState } from "react";
+import { Code2, FormInput, RotateCcw } from "lucide-react";
 import CodeMirror from "@uiw/react-codemirror";
 import { json } from "@codemirror/lang-json";
 import { vscodeDark } from "@uiw/codemirror-theme-vscode";
-import { RotateCcw } from "lucide-react";
 import { toast } from "sonner";
 
 import { PageHeader } from "@/components/page-shell";
+import { SchemaEditor } from "@/components/schema-editor";
 import {
   getConfig,
   listBackups,
   restoreBackup,
   type BackupRecord,
 } from "@/api/config";
+import {
+  getFieldCatalog,
+  type FieldCatalog,
+} from "@/api/field-catalog";
+import { getSchema, type JsonSchema } from "@/api/schema";
 import { cn } from "@/lib/utils";
 
 /**
- * The Configuration page in its read-only first iteration (issue #7).
+ * The Configuration page (issues #7 + #11).
  *
- * Displays the raw `komorebi.json` content via CodeMirror and a sidebar
- * listing recent backups with one-click Restore. The schema-driven editing
- * surface (with **Field catalog** overlay + Live-apply) arrives in #11+#18.
+ * Default view is the **schema-driven editor** in read-only mode, using
+ * the Field-catalog overlay for friendly labels. A "Raw JSON" toggle
+ * falls back to the CodeMirror view from #7 for users who want to see
+ * the literal file. The backups sidebar stays in either mode.
+ *
+ * Live-apply editing arrives in #18; the editor renders disabled inputs
+ * here.
  */
 export default function ConfigPage() {
   const { content, refresh: refreshContent, error } = useStaticConfig();
   const { backups, refresh: refreshBackups } = useBackups();
+  const { schema, catalog, error: schemaError } = useSchemaSurface();
+  const [view, setView] = useState<"form" | "raw">("form");
 
   const onRestore = useCallback(
     async (record: BackupRecord) => {
@@ -39,6 +51,8 @@ export default function ConfigPage() {
     [refreshContent, refreshBackups],
   );
 
+  const parsedValue = useParsedConfig(content);
+
   return (
     <div className="p-6 space-y-6">
       <PageHeader
@@ -46,14 +60,15 @@ export default function ConfigPage() {
         subtitle="komorebi.json — read-only for now; live editing lands in a later slice."
       />
 
+      <div className="flex items-center gap-2">
+        <ViewToggle view={view} onChange={setView} />
+      </div>
+
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_18rem] gap-6">
         <section className="space-y-2">
-          <div className="text-xs text-muted-foreground">
-            Live <code className="text-foreground">komorebi.json</code>
-          </div>
           {error ? (
             <ErrorPanel message={error} />
-          ) : (
+          ) : view === "raw" ? (
             <CodeMirror
               value={content ?? ""}
               theme={vscodeDark}
@@ -65,6 +80,17 @@ export default function ConfigPage() {
                 highlightActiveLine: false,
               }}
               className="text-sm border border-border rounded-md overflow-hidden"
+            />
+          ) : schemaError ? (
+            <ErrorPanel message={schemaError} />
+          ) : !schema || !catalog ? (
+            <LoadingPanel label="Loading schema…" />
+          ) : (
+            <SchemaEditor
+              schema={schema}
+              catalog={catalog}
+              value={parsedValue}
+              readonly
             />
           )}
         </section>
@@ -88,6 +114,59 @@ export default function ConfigPage() {
         </aside>
       </div>
     </div>
+  );
+}
+
+function ViewToggle({
+  view,
+  onChange,
+}: {
+  view: "form" | "raw";
+  onChange: (v: "form" | "raw") => void;
+}) {
+  return (
+    <div className="inline-flex rounded-md border border-border overflow-hidden text-xs">
+      <ToggleButton
+        active={view === "form"}
+        onClick={() => onChange("form")}
+        icon={<FormInput className="h-3.5 w-3.5" />}
+        label="Form"
+      />
+      <ToggleButton
+        active={view === "raw"}
+        onClick={() => onChange("raw")}
+        icon={<Code2 className="h-3.5 w-3.5" />}
+        label="Raw JSON"
+      />
+    </div>
+  );
+}
+
+function ToggleButton({
+  active,
+  onClick,
+  icon,
+  label,
+}: {
+  active: boolean;
+  onClick: () => void;
+  icon: React.ReactNode;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "inline-flex items-center gap-1.5 px-3 py-1.5 transition-colors",
+        active
+          ? "bg-secondary text-foreground"
+          : "text-muted-foreground hover:bg-secondary/50",
+      )}
+    >
+      {icon}
+      {label}
+    </button>
   );
 }
 
@@ -131,6 +210,14 @@ function ErrorPanel({ message }: { message: string }) {
   );
 }
 
+function LoadingPanel({ label }: { label: string }) {
+  return (
+    <div className="rounded-md border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
+      {label}
+    </div>
+  );
+}
+
 // ---- hooks -----------------------------------------------------------------
 
 function useStaticConfig() {
@@ -162,7 +249,6 @@ function useBackups() {
       const list = await listBackups("static");
       setBackups(list);
     } catch {
-      // Soft-fail: empty list is the right UI for "we couldn't read backups".
       setBackups([]);
     }
   }, []);
@@ -172,6 +258,45 @@ function useBackups() {
   }, [refresh]);
 
   return { backups, refresh };
+}
+
+/** Fetch the schema and the bundled field catalog once on mount. */
+function useSchemaSurface() {
+  const [schema, setSchema] = useState<JsonSchema | null>(null);
+  const [catalog, setCatalog] = useState<FieldCatalog | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([getSchema(), getFieldCatalog()])
+      .then(([s, c]) => {
+        if (cancelled) return;
+        setSchema(s);
+        setCatalog(c);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setError(formatError(e));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return { schema, catalog, error };
+}
+
+/** Parse the live JSON file content into a plain object for the editor. */
+function useParsedConfig(content: string | null): Record<string, unknown> | null {
+  if (!content) return null;
+  try {
+    const parsed = JSON.parse(content);
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 // ---- helpers ---------------------------------------------------------------
