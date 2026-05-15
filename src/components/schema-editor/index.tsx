@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 
+import type { ApplyError } from "@/api/apply";
 import type { FieldCatalog, FieldOverlay, SectionSpec } from "@/api/field-catalog";
 import type { JsonSchema } from "@/api/schema";
 import { cn } from "@/lib/utils";
@@ -16,7 +17,7 @@ import {
 } from "./widgets";
 
 /**
- * The schema-driven configuration editor (issue #11, per ADR-0002 + ADR-0004).
+ * The schema-driven configuration editor (issues #11 + #18).
  *
  * Walks the top-level fields of a JSON Schema, applies the Field-catalog
  * overlay where present (label, description, section, widget hint), and
@@ -29,24 +30,36 @@ import {
  *   2. schema `format` / `enum` hints
  *   3. schema `type` default
  *
- * Read-only mode (`readonly={true}`) renders the same controls but
- * disabled — editing arrives with #18 (Live-apply Static configuration).
+ * In editable mode (`readonly={false}`), supply `onFieldChange` — it
+ * fires per change and the parent's working-buffer hook does the
+ * debounce + apply. `error` surfaces the last apply failure inline.
  */
 export function SchemaEditor({
   schema,
   catalog,
   value,
   readonly,
+  onFieldChange,
+  error,
 }: {
   schema: JsonSchema;
   catalog: FieldCatalog;
   value: Record<string, unknown> | null;
   readonly?: boolean;
+  /** Required when `readonly !== true`. Called per top-level field
+   *  change with the next value for that field. */
+  onFieldChange?: (key: string, next: unknown) => void;
+  /** If set, surfaces an inline red note at the top of the editor.
+   *  Komorebi's error doesn't carry a JSON Pointer to the offending
+   *  field, so #18 shows it at the top of the page rather than under
+   *  a specific row. */
+  error?: ApplyError | null;
 }) {
   const grouped = useMemo(
     () => groupFieldsBySection(schema, catalog),
     [schema, catalog],
   );
+  const ro = readonly ?? false;
 
   if (grouped.length === 0) {
     return (
@@ -58,15 +71,28 @@ export function SchemaEditor({
 
   return (
     <div className="space-y-6">
+      {error && <ErrorBanner error={error} />}
       {grouped.map((g) => (
         <SectionBlock
           key={g.section.id}
           section={g.section}
           fields={g.fields}
           value={value}
-          readonly={readonly ?? false}
+          readonly={ro}
+          onFieldChange={onFieldChange}
         />
       ))}
+    </div>
+  );
+}
+
+// ---- error banner ----------------------------------------------------------
+
+function ErrorBanner({ error }: { error: ApplyError }) {
+  return (
+    <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+      <div className="font-medium">Komorebi rejected the last change</div>
+      <div className="mt-0.5 text-xs">{error.friendly}</div>
     </div>
   );
 }
@@ -78,11 +104,13 @@ function SectionBlock({
   fields,
   value,
   readonly,
+  onFieldChange,
 }: {
   section: SectionSpec;
   fields: GroupedField[];
   value: Record<string, unknown> | null;
   readonly: boolean;
+  onFieldChange?: (key: string, next: unknown) => void;
 }) {
   return (
     <section className="rounded-lg border border-border bg-card">
@@ -96,6 +124,9 @@ function SectionBlock({
             field={f}
             value={value?.[f.name]}
             readonly={readonly}
+            onChange={
+              onFieldChange ? (next) => onFieldChange(f.name, next) : undefined
+            }
           />
         ))}
       </ul>
@@ -109,16 +140,19 @@ function FieldRow({
   field,
   value,
   readonly,
+  onChange,
 }: {
   field: GroupedField;
   value: unknown;
   readonly: boolean;
+  onChange?: (next: unknown) => void;
 }) {
   const widget = pickWidget(field.schema, field.overlay);
   const label =
     field.overlay?.label ?? field.schema.title ?? humanise(field.name);
   const description =
     field.overlay?.description ?? field.schema.description ?? null;
+  const enumValues = pickEnumValues(field.schema);
 
   return (
     <li className="grid grid-cols-1 md:grid-cols-[12rem_1fr] gap-2 md:gap-6 px-4 py-3">
@@ -129,7 +163,13 @@ function FieldRow({
         </div>
       </div>
       <div className="space-y-1.5">
-        <FieldWidget widget={widget} value={value} readonly={readonly} />
+        <FieldWidget
+          widget={widget}
+          value={value}
+          readonly={readonly}
+          onChange={onChange}
+          enumValues={enumValues}
+        />
         {description && (
           <p className="text-xs text-muted-foreground">{description}</p>
         )}
@@ -142,10 +182,14 @@ function FieldWidget({
   widget,
   value,
   readonly,
+  onChange,
+  enumValues,
 }: {
   widget: WidgetKey;
   value: unknown;
   readonly: boolean;
+  onChange?: (next: unknown) => void;
+  enumValues: string[];
 }) {
   switch (widget) {
     case "checkbox":
@@ -153,6 +197,7 @@ function FieldWidget({
         <BooleanWidget
           value={typeof value === "boolean" ? value : false}
           readonly={readonly}
+          onChange={onChange}
         />
       );
     case "number":
@@ -160,17 +205,24 @@ function FieldWidget({
         <NumberWidget
           value={typeof value === "number" ? value : undefined}
           readonly={readonly}
+          onChange={onChange}
         />
       );
     case "select":
       return (
-        <EnumWidget value={value} readonly={readonly} options={[]} />
+        <EnumWidget
+          value={value}
+          readonly={readonly}
+          options={enumValues}
+          onChange={onChange}
+        />
       );
     case "string":
       return (
         <StringWidget
           value={typeof value === "string" ? value : ""}
           readonly={readonly}
+          onChange={onChange}
         />
       );
     case "array":
@@ -196,11 +248,6 @@ interface GroupedSection {
   fields: GroupedField[];
 }
 
-/**
- * Place every top-level schema field into either an overlay-defined
- * section or the synthesised "Other" section. Sections render in
- * `order` ascending; "Other" always last.
- */
 function groupFieldsBySection(
   schema: JsonSchema,
   catalog: FieldCatalog,
@@ -243,6 +290,11 @@ function sortFields(fields: GroupedField[]): GroupedField[] {
   return [...fields].sort((a, b) => a.name.localeCompare(b.name));
 }
 
+function pickEnumValues(schema: JsonSchema): string[] {
+  if (!Array.isArray(schema.enum)) return [];
+  return schema.enum.filter((v): v is string => typeof v === "string");
+}
+
 // ---- helpers ---------------------------------------------------------------
 
 function humanise(name: string): string {
@@ -253,5 +305,4 @@ function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
-// Re-export for convenience.
 export { cn };

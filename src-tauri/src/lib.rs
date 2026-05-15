@@ -12,6 +12,7 @@
 //! that Tauri's `#[command]` macro emits for async commands taking
 //! `tauri::State` arguments.
 
+pub mod apply_static;
 pub mod backup_store;
 pub mod command_catalog;
 pub mod diag_log;
@@ -454,6 +455,37 @@ fn get_reserved_chords() -> Vec<Chord> {
     ReservedChordList::bundled().chords().to_vec()
 }
 
+// ---- Issue #18 -------------------------------------------------------------
+
+/// Live-apply the Static configuration: tell the running Komorebi daemon
+/// to reload `komorebi.json` from disk (per ADR-0006). Called after every
+/// settled edit in the editor's live-apply flow.
+///
+/// Returns `Ok(())` on success. On failure returns the friendly + raw
+/// error pair so the editor can render an inline red note under the
+/// offending field.
+///
+/// When Komorebi is not running, this is a no-op success — the frontend
+/// is responsible for skipping the call entirely (it has the running
+/// state from `detect_komorebi`). We still tolerate being asked: if the
+/// underlying shell-out fails because the daemon is absent, the error
+/// translation surfaces the "not running" message.
+#[tauri::command]
+fn apply_static_config(
+    state: tauri::State<'_, AppState>,
+) -> Result<(), apply_static::ApplyError> {
+    let path = match state.komorebic.static_config_path() {
+        Ok(p) => p,
+        Err(e) => {
+            return Err(apply_static::ApplyError {
+                friendly: "Komodash couldn't find where komorebi.json lives.".into(),
+                raw: e.to_string(),
+            });
+        }
+    };
+    apply_static::apply(state.komorebic.as_ref(), &path)
+}
+
 fn config_path_for(
     state: &tauri::State<'_, AppState>,
     kind: ConfigKind,
@@ -544,6 +576,7 @@ pub fn run() {
             focus_workspace,
             start_komorebi,
             stop_komorebi,
+            apply_static_config,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

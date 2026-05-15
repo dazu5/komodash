@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import { Code2, FormInput, Info, RotateCcw } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { CircleCheck, Code2, FormInput, Info, PlayCircle, RotateCcw } from "lucide-react";
 import CodeMirror from "@uiw/react-codemirror";
 import { json } from "@codemirror/lang-json";
 import { vscodeDark } from "@uiw/codemirror-theme-vscode";
@@ -7,6 +7,7 @@ import { toast } from "sonner";
 
 import { PageHeader } from "@/components/page-shell";
 import { SchemaEditor } from "@/components/schema-editor";
+import { useWorkingBuffer } from "@/components/schema-editor/use-working-buffer";
 import {
   detectUnknownFields,
   getConfig,
@@ -18,28 +19,46 @@ import {
   getFieldCatalog,
   type FieldCatalog,
 } from "@/api/field-catalog";
+import { detectKomorebi } from "@/api/komorebi";
 import { getSchema, type JsonSchema } from "@/api/schema";
 import { cn } from "@/lib/utils";
 
 /**
- * The Configuration page (issues #7 + #11 + #17).
+ * The Configuration page (issues #7 + #11 + #17 + #18).
  *
- * Default view is the **schema-driven editor** in read-only mode, using
- * the Field-catalog overlay for friendly labels. A "Raw JSON" toggle
- * falls back to the CodeMirror view from #7 for users who want to see
- * the literal file. The backups sidebar stays in either mode.
+ * The default Form view is the schema-driven editor. With Komorebi
+ * running, edits debounce 300 ms and Live-apply per ADR-0006. With
+ * Komorebi not running, edits still persist to disk; a banner explains
+ * why apply is deferred (Start affordance lives on the Dashboard per
+ * #15).
  *
- * Live-apply editing arrives in #18; the editor renders disabled inputs
- * here. Issue #17 adds an "unknown fields" banner that warns the user
- * that fields their currently-installed Komorebi doesn't recognise are
- * being preserved on save (typically after a Komorebi downgrade).
+ * The Raw JSON toggle falls back to the CodeMirror read-only view from
+ * #7. The backups sidebar stays in either mode. An additional banner
+ * from #17 lists root-level fields the current Komorebi schema doesn't
+ * know about (typically after a downgrade) — those fields are
+ * preserved as-is on save.
  */
 export default function ConfigPage() {
-  const { content, refresh: refreshContent, error } = useStaticConfig();
+  const { content, refresh: refreshContent, error: readError } =
+    useStaticConfig();
   const { backups, refresh: refreshBackups } = useBackups();
   const { schema, catalog, error: schemaError } = useSchemaSurface();
+  const { running } = useKomorebiRunning();
   const unknownFields = useUnknownFields(content);
   const [view, setView] = useState<"form" | "raw">("form");
+
+  const initial = useParsedConfig(content);
+  const { buffer, setField, savedAt, error: applyError, inFlight } =
+    useWorkingBuffer({ initial, komorebiRunning: running });
+
+  // After a successful apply, refresh the on-disk content so the
+  // "Raw JSON" view stays consistent with reality.
+  useEffect(() => {
+    if (savedAt !== null) {
+      void refreshContent();
+      void refreshBackups();
+    }
+  }, [savedAt, refreshContent, refreshBackups]);
 
   const onRestore = useCallback(
     async (record: BackupRecord) => {
@@ -55,27 +74,27 @@ export default function ConfigPage() {
     [refreshContent, refreshBackups],
   );
 
-  const parsedValue = useParsedConfig(content);
-
   return (
     <div className="p-6 space-y-6">
       <PageHeader
         title="Configuration"
-        subtitle="komorebi.json — read-only for now; live editing lands in a later slice."
+        subtitle="komorebi.json — edits Live-apply when Komorebi is running."
       />
 
+      {!running && <NotRunningBanner />}
       {unknownFields.length > 0 && (
         <UnknownFieldsBanner fields={unknownFields} />
       )}
 
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-3">
         <ViewToggle view={view} onChange={setView} />
+        <SaveIndicator savedAt={savedAt} inFlight={inFlight} />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_18rem] gap-6">
         <section className="space-y-2">
-          {error ? (
-            <ErrorPanel message={error} />
+          {readError ? (
+            <ErrorPanel message={readError} />
           ) : view === "raw" ? (
             <CodeMirror
               value={content ?? ""}
@@ -97,8 +116,9 @@ export default function ConfigPage() {
             <SchemaEditor
               schema={schema}
               catalog={catalog}
-              value={parsedValue}
-              readonly
+              value={buffer}
+              onFieldChange={setField}
+              error={applyError}
             />
           )}
         </section>
@@ -124,6 +144,82 @@ export default function ConfigPage() {
     </div>
   );
 }
+
+// ---- "Komorebi not running" banner (#18) ----------------------------------
+
+function NotRunningBanner() {
+  // The real Start affordance lives on the Dashboard (#15). This banner
+  // explains *why* edits aren't taking effect immediately.
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-4 py-2.5 text-sm text-amber-200">
+      <div>
+        <span className="font-medium">Komorebi is not running.</span>{" "}
+        <span className="opacity-90">
+          Edits are saved to disk and will take effect once Komorebi starts.
+        </span>
+      </div>
+      <span
+        className="inline-flex items-center gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/20 px-3 py-1 text-xs opacity-70"
+        title="Use the Start Komorebi button on the Dashboard"
+      >
+        <PlayCircle className="h-3.5 w-3.5" />
+        Start on Dashboard
+      </span>
+    </div>
+  );
+}
+
+// ---- "unknown fields" banner (#17) ----------------------------------------
+
+function UnknownFieldsBanner({ fields }: { fields: string[] }) {
+  return (
+    <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
+      <Info className="h-4 w-4 mt-0.5 shrink-0" />
+      <div className="space-y-0.5">
+        <div className="font-medium">
+          This config has fields your current Komorebi version doesn't
+          recognise — they will be preserved as-is.
+        </div>
+        <div className="text-xs opacity-80">
+          {fields.map((f, i) => (
+            <span key={f}>
+              <code className="rounded bg-amber-500/20 px-1.5 py-0.5">{f}</code>
+              {i < fields.length - 1 ? ", " : ""}
+            </span>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---- "saved" indicator (#18) ----------------------------------------------
+
+function SaveIndicator({
+  savedAt,
+  inFlight,
+}: {
+  savedAt: number | null;
+  inFlight: boolean;
+}) {
+  if (inFlight) {
+    return (
+      <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+        Saving…
+      </span>
+    );
+  }
+  if (savedAt === null) return null;
+  const sinceSec = Math.max(0, Math.round((Date.now() - savedAt) / 1000));
+  return (
+    <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+      <CircleCheck className="h-3.5 w-3.5 text-emerald-400" />
+      Saved {sinceSec === 0 ? "just now" : `${sinceSec}s ago`}
+    </span>
+  );
+}
+
+// ---- toggle ---------------------------------------------------------------
 
 function ViewToggle({
   view,
@@ -226,36 +322,7 @@ function LoadingPanel({ label }: { label: string }) {
   );
 }
 
-/**
- * Banner shown on the Configuration page when the live `komorebi.json`
- * contains top-level keys the currently-installed Komorebi schema
- * doesn't declare (issue #17). Typical cause: the user downgraded
- * Komorebi. Komodash will preserve those fields on save, so the user
- * loses nothing — the banner is a heads-up, not a warning.
- */
-function UnknownFieldsBanner({ fields }: { fields: string[] }) {
-  return (
-    <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
-      <Info className="h-4 w-4 mt-0.5 shrink-0" />
-      <div className="space-y-0.5">
-        <div className="font-medium">
-          This config has fields your current Komorebi version doesn't
-          recognise — they will be preserved as-is.
-        </div>
-        <div className="text-xs opacity-80">
-          {fields.map((f, i) => (
-            <span key={f}>
-              <code className="rounded bg-amber-500/20 px-1.5 py-0.5">{f}</code>
-              {i < fields.length - 1 ? ", " : ""}
-            </span>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ---- hooks -----------------------------------------------------------------
+// ---- hooks ----------------------------------------------------------------
 
 function useStaticConfig() {
   const [content, setContent] = useState<string | null>(null);
@@ -297,7 +364,25 @@ function useBackups() {
   return { backups, refresh };
 }
 
-/** Fetch the schema and the bundled field catalog once on mount. */
+/** One-shot detection of Komorebi's running state at mount time. */
+function useKomorebiRunning() {
+  const [running, setRunning] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    detectKomorebi()
+      .then((s) => {
+        if (!cancelled) setRunning(s.running);
+      })
+      .catch(() => {
+        if (!cancelled) setRunning(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return { running };
+}
+
 function useSchemaSurface() {
   const [schema, setSchema] = useState<JsonSchema | null>(null);
   const [catalog, setCatalog] = useState<FieldCatalog | null>(null);
@@ -323,17 +408,18 @@ function useSchemaSurface() {
   return { schema, catalog, error };
 }
 
-/** Parse the live JSON file content into a plain object for the editor. */
 function useParsedConfig(content: string | null): Record<string, unknown> | null {
-  if (!content) return null;
-  try {
-    const parsed = JSON.parse(content);
-    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : null;
-  } catch {
-    return null;
-  }
+  return useMemo(() => {
+    if (!content) return null;
+    try {
+      const parsed = JSON.parse(content);
+      return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : null;
+    } catch {
+      return null;
+    }
+  }, [content]);
 }
 
 /**
@@ -364,7 +450,7 @@ function useUnknownFields(content: string | null): string[] {
   return fields;
 }
 
-// ---- helpers ---------------------------------------------------------------
+// ---- helpers --------------------------------------------------------------
 
 function formatError(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
