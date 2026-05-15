@@ -13,8 +13,13 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Bundled JSON, compiled into the binary.
+/// Bundled JSON for the Static-config overlay, compiled into the binary.
 const BUNDLED_JSON: &str = include_str!("../../resources/field-catalog.json");
+
+/// Bundled JSON for the Bar-config overlay, compiled into the binary
+/// (issue #19). Same shape; different field paths and sections so the
+/// Static catalog and the Bar catalog can grow independently.
+const BUNDLED_BAR_JSON: &str = include_str!("../../resources/bar-catalog.json");
 
 /// The full Field catalog: the sections list plus per-field overlays.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -57,10 +62,20 @@ pub struct FieldOverlay {
 }
 
 impl FieldCatalog {
-    /// The in-binary bundled catalog, parsed once on first call.
+    /// The in-binary bundled catalog for the Static configuration,
+    /// parsed once on first call.
     pub fn bundled() -> Self {
         serde_json::from_str::<FieldCatalogFile>(BUNDLED_JSON)
             .expect("bundled field-catalog.json must parse")
+            .into_catalog()
+    }
+
+    /// The in-binary bundled catalog for the Bar configuration
+    /// (issue #19). Different fields and sections from the Static
+    /// catalog, same shape so the editor renderer is agnostic.
+    pub fn bundled_bar() -> Self {
+        serde_json::from_str::<FieldCatalogFile>(BUNDLED_BAR_JSON)
+            .expect("bundled bar-catalog.json must parse")
             .into_catalog()
     }
 }
@@ -128,6 +143,41 @@ mod tests {
             catalog.sections.len(),
             "section ids must be unique"
         );
+    }
+
+    #[test]
+    fn bundled_bar_json_parses() {
+        let catalog = FieldCatalog::bundled_bar();
+        assert!(
+            catalog.sections.len() >= 3,
+            "expected at least 3 bar sections, got {}",
+            catalog.sections.len()
+        );
+        assert!(
+            catalog.fields.len() >= 5,
+            "expected at least 5 bar field overlays, got {}",
+            catalog.fields.len()
+        );
+        // Spot-check: the multi-monitor placement field must be there —
+        // it's the headline reason we built #19.
+        assert!(
+            catalog.fields.contains_key("monitor"),
+            "bar catalog must define 'monitor' (the multi-monitor field)"
+        );
+    }
+
+    #[test]
+    fn bar_catalog_sections_are_internally_consistent() {
+        let catalog = FieldCatalog::bundled_bar();
+        let section_ids: std::collections::HashSet<&str> =
+            catalog.sections.iter().map(|s| s.id.as_str()).collect();
+        for (path, overlay) in &catalog.fields {
+            assert!(
+                section_ids.contains(overlay.section.as_str()),
+                "bar field {path:?} references unknown section {:?}",
+                overlay.section
+            );
+        }
     }
 
     #[test]

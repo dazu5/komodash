@@ -14,6 +14,7 @@
 
 pub mod apply_static;
 pub mod backup_store;
+pub mod bar_schema_cache;
 pub mod command_catalog;
 pub mod diag_log;
 pub mod field_catalog;
@@ -30,6 +31,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use bar_schema_cache::BarSchemaCache;
 use command_catalog::CommandCatalog;
 use field_catalog::FieldCatalog;
 use hotkey_validator::ReservedChordList;
@@ -55,6 +57,9 @@ pub struct AppState {
     /// In-process schema cache (issue #11) — fetched lazily on first
     /// `get_schema` call, invalidated when the Komorebi version changes.
     pub schema_cache: Arc<SchemaCache>,
+    /// In-process bar schema cache (issue #19) — same pattern as
+    /// `schema_cache` but populated by `komorebi-bar.exe --schema`.
+    pub bar_schema_cache: Arc<BarSchemaCache>,
 }
 
 impl AppState {
@@ -71,6 +76,7 @@ impl AppState {
                 user_agent,
             }),
             schema_cache: Arc::new(SchemaCache::new()),
+            bar_schema_cache: Arc::new(BarSchemaCache::new()),
         };
         (state, komorebic)
     }
@@ -444,6 +450,39 @@ fn get_field_catalog() -> FieldCatalog {
     FieldCatalog::bundled()
 }
 
+// ---- Issue #19: Bar configuration editor -----------------------------------
+
+/// Return the **Bar configuration** JSON Schema for the currently-
+/// installed Komorebi (issue #19, per ADR-0002 — same pattern as the
+/// Static schema but sourced from `komorebi-bar.exe --schema`).
+#[tauri::command]
+fn get_bar_schema(state: tauri::State<'_, AppState>) -> Result<String, String> {
+    state
+        .bar_schema_cache
+        .load(state.komorebic.as_ref())
+        .map_err(stringify_err)
+}
+
+/// Return the bundled Bar Field catalog overlay (issue #19, per
+/// ADR-0004). Different fields and sections from the Static catalog;
+/// renderer is agnostic.
+#[tauri::command]
+fn get_bar_field_catalog() -> FieldCatalog {
+    FieldCatalog::bundled_bar()
+}
+
+/// Restart the Komorebi bar daemon so a fresh `komorebi.bar.json` takes
+/// effect (issue #19, per ADR-0006 buffered-apply — the bar daemon
+/// doesn't hot-reload). Same shape as #20's `apply_whkdrc`.
+#[tauri::command]
+async fn apply_bar_config(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let client = state.komorebic.clone();
+    tokio::task::spawn_blocking(move || client.restart_bar())
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
 // ---- Issue #12 -------------------------------------------------------------
 
 /// Return the bundled Windows-reserved chord list (per ADR-0009). The
@@ -577,6 +616,9 @@ pub fn run() {
             start_komorebi,
             stop_komorebi,
             apply_static_config,
+            get_bar_schema,
+            get_bar_field_catalog,
+            apply_bar_config,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

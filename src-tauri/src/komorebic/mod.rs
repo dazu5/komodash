@@ -61,8 +61,9 @@ pub struct KomorebiState {
 /// `unsubscribe_pipe`, `static_config_path`, `bar_config_path`,
 /// `whkdrc_path`, `static_config_schema`, `toggle_pause`,
 /// `toggle_mouse_follows_focus`, `toggle_float_override`, `retile`,
-/// `focus_workspace`, `start`, `stop`, `replace_configuration`) carry
-/// default-bail impls so pre-existing fakes that only implement
+/// `focus_workspace`, `start`, `stop`, `replace_configuration`,
+/// `bar_config_schema`, `restart_bar`) carry default-bail impls so
+/// pre-existing fakes that only implement
 /// `discover` / `is_running` keep compiling.
 pub trait Komorebic: Send + Sync {
     /// Locate `komorebic.exe` and read its version. Returns `None` if the
@@ -193,6 +194,21 @@ pub trait Komorebic: Send + Sync {
     /// friendly inline messages.
     fn replace_configuration(&self, _path: &Path) -> Result<()> {
         anyhow::bail!("replace_configuration is not implemented for this Komorebic")
+    }
+
+    /// Raw JSON Schema for the **Bar configuration** as emitted by
+    /// `komorebi-bar.exe --schema` (per [`crate::schema_cache`]'s
+    /// pattern for the static schema). Issue #19.
+    fn bar_config_schema(&self) -> Result<String> {
+        anyhow::bail!("bar_config_schema is not implemented for this Komorebic")
+    }
+
+    /// Restart the Komorebi bar daemon (issue #19, per ADR-0006
+    /// buffered-apply). The bar doesn't hot-reload — kill `komorebi-
+    /// bar.exe` and re-launch via `komorebic start --bar`. Same
+    /// idempotent pattern as `restart_whkd`.
+    fn restart_bar(&self) -> Result<()> {
+        anyhow::bail!("restart_bar is not implemented for this Komorebic")
     }
 }
 
@@ -346,6 +362,61 @@ impl Komorebic for WinKomorebic {
             .to_str()
             .ok_or_else(|| anyhow::anyhow!("config path is not valid UTF-8"))?;
         self.run_subcommand(&["replace-configuration", config_str])
+    }
+
+    fn bar_config_schema(&self) -> Result<String> {
+        // `komorebi-bar.exe` sits next to `komorebic.exe` in the install
+        // dir. Locate it from komorebic's path so we work for winget,
+        // Scoop, or manual installs that may not have it on PATH.
+        let bar_path = self.locate_bar()?;
+        let output = Command::new(&bar_path).arg("--schema").output()?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "komorebi-bar --schema failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+
+    fn restart_bar(&self) -> Result<()> {
+        // Same shape as `restart_whkd` from #20.
+        let _ = Command::new("taskkill")
+            .args(["/F", "/IM", "komorebi-bar.exe"])
+            .output();
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        let path = self
+            .locate()
+            .ok_or_else(|| anyhow::anyhow!("komorebic.exe could not be located"))?;
+        let output = Command::new(&path).args(["start", "--bar"]).output()?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "komorebic start --bar failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        Ok(())
+    }
+}
+
+impl WinKomorebic {
+    /// Find `komorebi-bar.exe`. PATH first (winget shim, Scoop shim);
+    /// fallback to the install dir alongside `komorebic.exe`.
+    fn locate_bar(&self) -> Result<PathBuf> {
+        if let Ok(p) = which::which("komorebi-bar.exe") {
+            return Ok(p);
+        }
+        // Same install dir as komorebic — `<install>\bin\komorebic.exe`
+        // → `<install>\bin\komorebi-bar.exe`.
+        if let Some(komorebic) = self.locate() {
+            if let Some(dir) = komorebic.parent() {
+                let candidate = dir.join("komorebi-bar.exe");
+                if candidate.exists() {
+                    return Ok(candidate);
+                }
+            }
+        }
+        anyhow::bail!("komorebi-bar.exe could not be located")
     }
 }
 
