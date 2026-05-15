@@ -90,24 +90,10 @@ function NotRunningCta({
   crashed: boolean;
   onAfterStart: () => Promise<void>;
 }) {
+  // ⚠️ All hooks MUST run unconditionally — the early `return` for the
+  // "not installed" branch goes *after* every hook so the hook count
+  // never changes between renders (Rules of Hooks).
   const [busy, setBusy] = useState(false);
-
-  // Komorebi not installed at all — direct the user toward the install
-  // path. The first-run wizard (#23) will eventually consume this; for
-  // now the About-page install panel from #9 is the workaround.
-  if (!installed) {
-    return (
-      <div className="rounded-lg border border-dashed border-border p-10 text-center space-y-3">
-        <h3 className="text-sm font-medium">Komorebi isn't installed</h3>
-        <p className="text-xs text-muted-foreground max-w-md mx-auto">
-          Komodash couldn't find <code>komorebic.exe</code> on this machine.
-          Head to the About page and use the install panel — it'll install
-          Komorebi via winget or Scoop.
-        </p>
-      </div>
-    );
-  }
-
   const onStart = useCallback(async () => {
     setBusy(true);
     try {
@@ -131,6 +117,22 @@ function NotRunningCta({
       window.setTimeout(() => setBusy(false), 2_000);
     }
   }, [crashed, onAfterStart]);
+
+  // Komorebi not installed at all — direct the user toward the install
+  // path. The first-run wizard (#23) will eventually consume this; for
+  // now the About-page install panel from #9 is the workaround.
+  if (!installed) {
+    return (
+      <div className="rounded-lg border border-dashed border-border p-10 text-center space-y-3">
+        <h3 className="text-sm font-medium">Komorebi isn't installed</h3>
+        <p className="text-xs text-muted-foreground max-w-md mx-auto">
+          Komodash couldn't find <code>komorebic.exe</code> on this machine.
+          Head to the About page and use the install panel — it'll install
+          Komorebi via winget or Scoop.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="rounded-lg border border-dashed border-border p-10 text-center space-y-4">
