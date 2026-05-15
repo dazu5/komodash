@@ -59,9 +59,10 @@ pub struct KomorebiState {
 ///
 /// All optional methods (`help`, `help_for_subcommand`, `subscribe_pipe`,
 /// `unsubscribe_pipe`, `static_config_path`, `bar_config_path`,
-/// `whkdrc_path`, `static_config_schema`) carry default-bail impls so
-/// pre-existing fakes that only implement `discover` / `is_running` keep
-/// compiling.
+/// `whkdrc_path`, `static_config_schema`, `toggle_pause`,
+/// `toggle_mouse_follows_focus`, `toggle_float_override`, `retile`)
+/// carry default-bail impls so pre-existing fakes that only implement
+/// `discover` / `is_running` keep compiling.
 pub trait Komorebic: Send + Sync {
     /// Locate `komorebic.exe` and read its version. Returns `None` if the
     /// binary cannot be found or fails `--version`.
@@ -122,6 +123,35 @@ pub trait Komorebic: Send + Sync {
     /// reshape what Komorebi publishes (per ADR-0002).
     fn static_config_schema(&self) -> Result<String> {
         anyhow::bail!("static_config_schema is not implemented for this Komorebic")
+    }
+
+    // ---- Issue #14: runtime quick-toggles --------------------------------
+
+    /// Toggle Komorebi's global pause state.
+    fn toggle_pause(&self) -> Result<()> {
+        anyhow::bail!("toggle_pause is not implemented for this Komorebic")
+    }
+
+    /// Toggle the "mouse follows focus" behaviour at runtime. This is
+    /// a runtime override of the static config setting; the config file
+    /// itself is not touched (that path is the Configuration editor in
+    /// #18). Lasts until Komorebi restarts.
+    fn toggle_mouse_follows_focus(&self) -> Result<()> {
+        anyhow::bail!("toggle_mouse_follows_focus is not implemented for this Komorebic")
+    }
+
+    /// Toggle Komorebi's "float override" — when on, every new window is
+    /// floated rather than tiled. Runtime-only (same lifetime semantics
+    /// as `toggle_mouse_follows_focus`).
+    fn toggle_float_override(&self) -> Result<()> {
+        anyhow::bail!("toggle_float_override is not implemented for this Komorebic")
+    }
+
+    /// Re-tile every managed window on every workspace. Used as a
+    /// recovery affordance when layout state has drifted (e.g. after a
+    /// resolution change). Idempotent and fast.
+    fn retile(&self) -> Result<()> {
+        anyhow::bail!("retile is not implemented for this Komorebic")
     }
 }
 
@@ -214,6 +244,22 @@ impl Komorebic for WinKomorebic {
             );
         }
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+
+    fn toggle_pause(&self) -> Result<()> {
+        self.run_subcommand(&["toggle-pause"])
+    }
+
+    fn toggle_mouse_follows_focus(&self) -> Result<()> {
+        self.run_subcommand(&["toggle-mouse-follows-focus"])
+    }
+
+    fn toggle_float_override(&self) -> Result<()> {
+        self.run_subcommand(&["toggle-float-override"])
+    }
+
+    fn retile(&self) -> Result<()> {
+        self.run_subcommand(&["retile"])
     }
 }
 

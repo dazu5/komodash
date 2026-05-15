@@ -2,22 +2,25 @@ import { useEffect, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 
 import { PageHeader } from "@/components/page-shell";
+import { QuickToggleRow } from "@/components/quick-toggles";
 import { StatusPill } from "@/components/status-pill";
 import { detectKomorebi, type KomorebiState } from "@/api/komorebi";
 import { useLiveState, type LiveStateStatus } from "@/stores/live-state";
 import { cn } from "@/lib/utils";
 
 /**
- * The Dashboard page (issues #2 + #6). Shows:
+ * The Dashboard page (issues #2 + #6 + #14). Shows:
  *
  * - Status pill: detection / running state from the one-shot
  *   `detect_komorebi` invoke (issue #2).
+ * - Quick-toggle row: Pause / Mouse follows focus / Float override
+ *   pills + Retile button (issue #14). Each calls a thin Tauri
+ *   command that delegates to `komorebic toggle-*` / `komorebic retile`.
  * - Live state tree: Monitor → Workspace → Container → Window,
  *   updated in real time from the named-pipe subscription (issue #6).
  *
- * Quick toggles (issue #14), workspace click (issue #13), window
- * context menus (issue #26), and start/stop buttons (issue #15) land
- * in their own slices.
+ * Workspace click (issue #13), window context menus (issue #26), and
+ * start/stop buttons (issue #15) land in their own slices.
  */
 export default function DashboardPage() {
   const detection = useKomorebiDetection();
@@ -29,6 +32,8 @@ export default function DashboardPage() {
     return () => cancel?.();
   }, [subscribe]);
 
+  const running = detection?.running ?? false;
+
   return (
     <div className="p-6 space-y-6">
       <PageHeader
@@ -39,6 +44,8 @@ export default function DashboardPage() {
         <StatusPill state={detection} />
         <LiveStatePill status={status} />
       </div>
+
+      <QuickToggleRow snapshot={snapshot} disabled={!running} />
 
       <LiveStateTree snapshot={snapshot} status={status} />
     </div>

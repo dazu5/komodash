@@ -119,6 +119,51 @@ fn command_catalog_cache_path() -> anyhow::Result<PathBuf> {
     Ok(dir.join("komodash").join("command-catalog.json"))
 }
 
+// ---- Issue #14: quick-toggle row + Retile ----------------------------------
+
+/// Toggle Komorebi's global pause state. Runtime-only; the static config
+/// is not touched (this is a "what's running right now" override).
+#[tauri::command]
+async fn toggle_pause(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    run_thin(state.komorebic.clone(), |c| c.toggle_pause()).await
+}
+
+/// Toggle the runtime "mouse follows focus" behaviour. Same runtime-only
+/// semantics as `toggle_pause` — the static config setting is unchanged
+/// (edit it on the Configuration page for a persistent change).
+#[tauri::command]
+async fn toggle_mouse_follows_focus(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    run_thin(state.komorebic.clone(), |c| c.toggle_mouse_follows_focus()).await
+}
+
+/// Toggle "float override" — new windows float rather than tile until
+/// the next Komorebi restart or another toggle.
+#[tauri::command]
+async fn toggle_float_override(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    run_thin(state.komorebic.clone(), |c| c.toggle_float_override()).await
+}
+
+/// Re-tile every managed window on every workspace. The recovery
+/// affordance for "windows are in the wrong place" after a monitor
+/// resolution change or similar runtime event.
+#[tauri::command]
+async fn retile(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    run_thin(state.komorebic.clone(), |c| c.retile()).await
+}
+
+/// Shared backbone for thin `&dyn Komorebic` → `Result<()>` Tauri
+/// commands. Runs the closure on the blocking pool so the webview
+/// stays responsive while `komorebic.exe` runs.
+async fn run_thin<F>(client: Arc<dyn Komorebic>, op: F) -> Result<(), String>
+where
+    F: FnOnce(&dyn Komorebic) -> anyhow::Result<()> + Send + 'static,
+{
+    tokio::task::spawn_blocking(move || op(client.as_ref()))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
 // ---- Issue #9 --------------------------------------------------------------
 
 /// Detected host package managers, in preference order (winget first,
@@ -439,6 +484,10 @@ pub fn run() {
             detect_unknown_fields,
             upgrade_komorebi_via_winget,
             upgrade_komorebi_via_scoop,
+            toggle_pause,
+            toggle_mouse_follows_focus,
+            toggle_float_override,
+            retile,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
