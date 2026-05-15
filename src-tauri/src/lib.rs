@@ -15,11 +15,13 @@
 pub mod backup_store;
 pub mod command_catalog;
 pub mod diag_log;
+pub mod field_catalog;
 pub mod hotkey_validator;
 pub mod installer;
 pub mod komorebic;
 pub mod live_state;
 pub mod managed_config;
+pub mod schema_cache;
 pub mod updates;
 pub mod whkdrc_parser;
 
@@ -28,10 +30,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use command_catalog::CommandCatalog;
+use field_catalog::FieldCatalog;
 use hotkey_validator::ReservedChordList;
 use installer::{InstallResult, PackageManager, PackageManagerKind};
 use komorebic::{Komorebic, KomorebiState, WinKomorebic};
 use managed_config::ConfigKind;
+use schema_cache::SchemaCache;
 use tauri::{AppHandle, Emitter, Manager};
 use whkdrc_parser::Chord;
 use updates::{
@@ -46,6 +50,9 @@ const UPDATE_CACHE_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 pub struct AppState {
     pub komorebic: Arc<dyn Komorebic>,
     pub release_source: Arc<dyn ReleaseSource>,
+    /// In-process schema cache (issue #11) — fetched lazily on first
+    /// `get_schema` call, invalidated when the Komorebi version changes.
+    pub schema_cache: Arc<SchemaCache>,
 }
 
 impl AppState {
@@ -61,6 +68,7 @@ impl AppState {
                 repo: "komodash".into(),
                 user_agent,
             }),
+            schema_cache: Arc::new(SchemaCache::new()),
         };
         (state, komorebic)
     }
@@ -239,6 +247,32 @@ fn restore_backup(
     managed_config::restore_backup(&backups, kind, &id, &path).map_err(stringify_err)
 }
 
+// ---- Issue #11 -------------------------------------------------------------
+
+/// Return the **Static configuration** JSON Schema for the currently-installed
+/// Komorebi (issue #11, per ADR-0002). Cached in-process; re-fetched on
+/// Komorebi version change.
+///
+/// Returned as a raw JSON *string* rather than a parsed Value so the
+/// frontend can deserialise it once into the same `JsonSchema` shape the
+/// `<SchemaEditor>` consumes — preserves field order across the bridge,
+/// which `serde_json::Value` would not.
+#[tauri::command]
+fn get_schema(state: tauri::State<'_, AppState>) -> Result<String, String> {
+    state
+        .schema_cache
+        .load(state.komorebic.as_ref())
+        .map_err(stringify_err)
+}
+
+/// Return the bundled Field catalog overlay (issue #11, per ADR-0004).
+/// In-binary; no I/O. Returned as a typed struct so the frontend gets a
+/// stable shape via the serde bridge.
+#[tauri::command]
+fn get_field_catalog() -> FieldCatalog {
+    FieldCatalog::bundled()
+}
+
 // ---- Issue #12 -------------------------------------------------------------
 
 /// Return the bundled Windows-reserved chord list (per ADR-0009). The
@@ -326,6 +360,8 @@ pub fn run() {
             write_config,
             list_backups,
             restore_backup,
+            get_schema,
+            get_field_catalog,
             get_reserved_chords,
         ])
         .run(tauri::generate_context!())
