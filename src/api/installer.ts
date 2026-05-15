@@ -32,6 +32,18 @@ export async function installKomorebiViaScoop(): Promise<InstallResult> {
   return await invoke<InstallResult>("install_komorebi_via_scoop");
 }
 
+/** Kick off `winget upgrade LGUG2Z.komorebi` (issue #16). Same streaming
+ *  event channel as install (`installation-output`); render both in the
+ *  same log panel. */
+export async function upgradeKomorebiViaWinget(): Promise<InstallResult> {
+  return await invoke<InstallResult>("upgrade_komorebi_via_winget");
+}
+
+/** Kick off `scoop update komorebi` (issue #16). Same streaming semantics. */
+export async function upgradeKomorebiViaScoop(): Promise<InstallResult> {
+  return await invoke<InstallResult>("upgrade_komorebi_via_scoop");
+}
+
 /** Subscribe to streamed install output. The handler is called once
  * per line of combined stdout/stderr from the install subprocess.
  * Returns an `UnlistenFn` — call it to stop receiving updates. */

@@ -4,6 +4,7 @@ import { toast } from "sonner";
 
 import { PageHeader } from "@/components/page-shell";
 import { InstallPanel } from "@/components/install-panel";
+import { UpgradeKomorebiCard } from "@/components/upgrade-komorebi-card";
 import { getDiagnosticInfo } from "@/api/diagnostic";
 import { cn } from "@/lib/utils";
 
@@ -43,6 +44,7 @@ export default function AboutPage() {
         </p>
       </div>
 
+      <UpgradeKomorebiCard />
       <DiagnosticInfoCard />
       <InstallPanel />
     </div>

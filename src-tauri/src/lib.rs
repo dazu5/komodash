@@ -142,6 +142,20 @@ async fn install_komorebi_via_scoop(app: AppHandle) -> Result<InstallResult, Str
     run_install(PackageManagerKind::Scoop, app).await
 }
 
+/// Upgrade Komorebi via winget (issue #16). Wraps `winget upgrade
+/// LGUG2Z.komorebi`. Same `installation-output` streaming event as the
+/// install commands — the frontend renders both in the same log panel.
+#[tauri::command]
+async fn upgrade_komorebi_via_winget(app: AppHandle) -> Result<InstallResult, String> {
+    run_upgrade(PackageManagerKind::Winget, app).await
+}
+
+/// Upgrade Komorebi via Scoop. Same streaming semantics as winget.
+#[tauri::command]
+async fn upgrade_komorebi_via_scoop(app: AppHandle) -> Result<InstallResult, String> {
+    run_upgrade(PackageManagerKind::Scoop, app).await
+}
+
 /// Shared backbone for the two install commands: shells out on the
 /// blocking pool, emits each line as an `installation-output` event.
 async fn run_install(
@@ -152,6 +166,21 @@ async fn run_install(
         installer::install_komorebi(manager, |line| {
             // Best-effort emit: a dropped event is preferable to crashing
             // the install mid-stream. Receivers see the gap as silence.
+            let _ = app.emit("installation-output", line.to_string());
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}
+
+/// Same shape as `run_install` but using the upgrade verb (issue #16).
+async fn run_upgrade(
+    manager: PackageManagerKind,
+    app: AppHandle,
+) -> Result<InstallResult, String> {
+    tokio::task::spawn_blocking(move || {
+        installer::upgrade_komorebi(manager, |line| {
             let _ = app.emit("installation-output", line.to_string());
         })
     })
@@ -408,6 +437,8 @@ pub fn run() {
             get_reserved_chords,
             write_static_config_merged,
             detect_unknown_fields,
+            upgrade_komorebi_via_winget,
+            upgrade_komorebi_via_scoop,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
