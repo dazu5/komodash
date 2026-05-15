@@ -272,7 +272,11 @@ fn parse_binding(line: &str) -> Result<Binding> {
 }
 
 /// Parse a chord like `alt + shift + h` (or `Alt+Shift+H`) into a [`Chord`].
-fn parse_chord(text: &str) -> Result<Chord> {
+///
+/// Made `pub` so the hotkey validator (#12) can normalise reserved-chord
+/// strings the same way it normalises user-typed bindings, giving us a
+/// modifier-order-independent equality check.
+pub fn parse_chord(text: &str) -> Result<Chord> {
     let tokens: Vec<&str> = text.split('+').map(|t| t.trim()).collect();
     if tokens.is_empty() || tokens.iter().any(|t| t.is_empty()) {
         return Err(anyhow!("empty chord token in {text:?}"));
