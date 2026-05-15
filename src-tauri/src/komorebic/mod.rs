@@ -61,8 +61,8 @@ pub struct KomorebiState {
 /// `unsubscribe_pipe`, `static_config_path`, `bar_config_path`,
 /// `whkdrc_path`, `static_config_schema`, `toggle_pause`,
 /// `toggle_mouse_follows_focus`, `toggle_float_override`, `retile`,
-/// `focus_workspace`) carry default-bail impls so pre-existing fakes
-/// that only implement
+/// `focus_workspace`, `start`, `stop`) carry default-bail impls so
+/// pre-existing fakes that only implement
 /// `discover` / `is_running` keep compiling.
 pub trait Komorebic: Send + Sync {
     /// Locate `komorebic.exe` and read its version. Returns `None` if the
@@ -162,6 +162,26 @@ pub trait Komorebic: Send + Sync {
     /// (issue #13).
     fn focus_workspace(&self, _monitor_index: usize, _workspace_index: usize) -> Result<()> {
         anyhow::bail!("focus_workspace is not implemented for this Komorebic")
+    }
+
+    /// Start the Komorebi daemon. `with_whkd` toggles `--whkd` so whkd
+    /// also launches; `with_bar` toggles `--bar` so the status bar
+    /// daemon launches. Both default to `true` from the frontend per
+    /// issue #15.
+    ///
+    /// Returns once `komorebic start` exits — Komorebi is still warming
+    /// up at that point. The frontend should poll `is_running` (or
+    /// wait for the Live state subscription to reconnect) to know when
+    /// the daemon is actually serving.
+    fn start(&self, _with_whkd: bool, _with_bar: bool) -> Result<()> {
+        anyhow::bail!("start is not implemented for this Komorebic")
+    }
+
+    /// Stop the Komorebi daemon. Idempotent — calling this when Komorebi
+    /// is not running succeeds quietly. Used by Restart (after a crash)
+    /// and by the Dashboard's Stop affordance.
+    fn stop(&self) -> Result<()> {
+        anyhow::bail!("stop is not implemented for this Komorebic")
     }
 }
 
@@ -276,6 +296,38 @@ impl Komorebic for WinKomorebic {
         let monitor = monitor_index.to_string();
         let workspace = workspace_index.to_string();
         self.run_subcommand(&["focus-workspace", &monitor, &workspace])
+    }
+
+    fn start(&self, with_whkd: bool, with_bar: bool) -> Result<()> {
+        let mut args: Vec<&str> = vec!["start"];
+        if with_whkd {
+            args.push("--whkd");
+        }
+        if with_bar {
+            args.push("--bar");
+        }
+        self.run_subcommand(&args)
+    }
+
+    fn stop(&self) -> Result<()> {
+        // Idempotent at our layer: if Komorebi isn't running, `komorebic
+        // stop` exits non-zero with "Komorebi is not running" — treat
+        // that as success.
+        let path = self
+            .locate()
+            .ok_or_else(|| anyhow::anyhow!("komorebic.exe could not be located"))?;
+        let output = Command::new(&path).arg("stop").output()?;
+        if output.status.success() {
+            return Ok(());
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr).to_ascii_lowercase();
+        if stderr.contains("not running") || stderr.contains("could not connect") {
+            return Ok(());
+        }
+        anyhow::bail!(
+            "komorebic stop failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
     }
 }
 

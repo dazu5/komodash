@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ChevronDown, ChevronRight, PlayCircle, RotateCw } from "lucide-react";
 import { toast } from "sonner";
 
 import { PageHeader } from "@/components/page-shell";
@@ -8,30 +8,31 @@ import { StatusPill } from "@/components/status-pill";
 import {
   detectKomorebi,
   focusWorkspace,
+  startKomorebi,
+  stopKomorebi,
   type KomorebiState,
 } from "@/api/komorebi";
 import { useLiveState, type LiveStateStatus } from "@/stores/live-state";
 import { cn } from "@/lib/utils";
 
 /**
- * The Dashboard page (issues #2 + #6 + #13 + #14). Shows:
+ * The Dashboard page (issues #2 + #6 + #13 + #14 + #15). Shows:
  *
- * - Status pill: detection / running state from the one-shot
- *   `detect_komorebi` invoke (issue #2).
- * - Quick-toggle row: Pause / Mouse follows focus / Float override
- *   pills + Retile button (issue #14). Each calls a thin Tauri
- *   command that delegates to `komorebic toggle-*` / `komorebic retile`.
- * - Live state tree: Monitor → Workspace → Container → Window,
- *   updated in real time from the named-pipe subscription (issue #6).
- * - Click a Workspace row to focus it via `komorebic focus-workspace`
- *   (issue #13). The Live state subscription delivers the resulting
- *   focus change within ~100 ms; the UI updates automatically.
+ * - Status pill: detection / running state from periodic `detect_komorebi`
+ *   (issue #2; polled per #15 so external state changes are visible).
+ * - Quick-toggle row: Pause / Mouse follows focus / Float override pills
+ *   + Retile button (issue #14). Disabled when Komorebi isn't running.
+ * - Live state tree: Monitor → Workspace → Container → Window, updated
+ *   in real time from the named-pipe subscription (issue #6). Click a
+ *   Workspace row to focus it via `komorebic focus-workspace` (issue #13).
+ * - When Komorebi isn't running, the tree is replaced with a centred
+ *   call-to-action: Start (or Restart if Komorebi crashed mid-session,
+ *   issue #15).
  *
- * Window context menus (issue #26) and start/stop buttons (issue #15)
- * land in their own slices.
+ * Window context menus (issue #26) land in their own slice.
  */
 export default function DashboardPage() {
-  const detection = useKomorebiDetection();
+  const { detection, refresh: refreshDetection } = useKomorebiDetection();
   const { snapshot, status, subscribe } = useLiveState();
 
   useEffect(() => {
@@ -40,7 +41,17 @@ export default function DashboardPage() {
     return () => cancel?.();
   }, [subscribe]);
 
+  // Track whether we've ever seen Komorebi connected in this session,
+  // so that a transition from connected → waiting surfaces as "crashed"
+  // rather than "never started".
+  const hasEverConnected = useRef(false);
+  if (status === "connected") {
+    hasEverConnected.current = true;
+  }
+
   const running = detection?.running ?? false;
+  const installed = (detection?.installed ?? null) !== null;
+  const crashed = hasEverConnected.current && !running;
 
   return (
     <div className="p-6 space-y-6">
@@ -55,7 +66,109 @@ export default function DashboardPage() {
 
       <QuickToggleRow snapshot={snapshot} disabled={!running} />
 
-      <LiveStateTree snapshot={snapshot} status={status} />
+      {running ? (
+        <LiveStateTree snapshot={snapshot} status={status} />
+      ) : (
+        <NotRunningCta
+          installed={installed}
+          crashed={crashed}
+          onAfterStart={refreshDetection}
+        />
+      )}
+    </div>
+  );
+}
+
+// ---- not-running CTA (#15) ------------------------------------------------
+
+function NotRunningCta({
+  installed,
+  crashed,
+  onAfterStart,
+}: {
+  installed: boolean;
+  crashed: boolean;
+  onAfterStart: () => Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+
+  // Komorebi not installed at all — direct the user toward the install
+  // path. The first-run wizard (#23) will eventually consume this; for
+  // now the About-page install panel from #9 is the workaround.
+  if (!installed) {
+    return (
+      <div className="rounded-lg border border-dashed border-border p-10 text-center space-y-3">
+        <h3 className="text-sm font-medium">Komorebi isn't installed</h3>
+        <p className="text-xs text-muted-foreground max-w-md mx-auto">
+          Komodash couldn't find <code>komorebic.exe</code> on this machine.
+          Head to the About page and use the install panel — it'll install
+          Komorebi via winget or Scoop.
+        </p>
+      </div>
+    );
+  }
+
+  const onStart = useCallback(async () => {
+    setBusy(true);
+    try {
+      if (crashed) {
+        // Idempotent stop first so a half-dead process doesn't fight us.
+        await stopKomorebi();
+      }
+      await startKomorebi({ withWhkd: true, withBar: true });
+      toast.success("Starting Komorebi…");
+      // Give Komorebi ~2s to come up before re-detecting. The Live state
+      // subscription reconnects on its own via the existing backoff.
+      window.setTimeout(() => {
+        void onAfterStart();
+      }, 2_000);
+    } catch (e) {
+      toast.error(
+        `Couldn't start Komorebi: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    } finally {
+      // Hold the busy state for the 2s settle so the user sees the spinner.
+      window.setTimeout(() => setBusy(false), 2_000);
+    }
+  }, [crashed, onAfterStart]);
+
+  return (
+    <div className="rounded-lg border border-dashed border-border p-10 text-center space-y-4">
+      <h3 className="text-sm font-medium">
+        {crashed ? "Komorebi crashed" : "Komorebi is not running"}
+      </h3>
+      <p className="text-xs text-muted-foreground max-w-md mx-auto">
+        {crashed
+          ? "The Komorebi daemon disconnected unexpectedly. Restart it to get tiling back."
+          : "Start Komorebi to begin tiling. Komodash will launch it with the status bar and hotkey daemon enabled."}
+      </p>
+      <button
+        type="button"
+        onClick={onStart}
+        disabled={busy}
+        className={cn(
+          "inline-flex items-center gap-2 rounded-md px-4 py-2 text-sm font-medium",
+          "bg-primary text-primary-foreground hover:bg-primary/90 transition-colors",
+          "disabled:cursor-not-allowed disabled:opacity-70",
+        )}
+      >
+        {busy ? (
+          <>
+            <RotateCw className="h-4 w-4 animate-spin" />
+            {crashed ? "Restarting…" : "Starting…"}
+          </>
+        ) : crashed ? (
+          <>
+            <RotateCw className="h-4 w-4" />
+            Restart Komorebi
+          </>
+        ) : (
+          <>
+            <PlayCircle className="h-4 w-4" />
+            Start Komorebi
+          </>
+        )}
+      </button>
     </div>
   );
 }
@@ -252,34 +365,42 @@ function WindowRow({ window: w }: { window: unknown }) {
   );
 }
 
-// ---- detection hook (from #2) ---------------------------------------------
+// ---- detection hook (from #2, polled for #15) ------------------------------
 
-function useKomorebiDetection(): KomorebiState | null {
+/**
+ * Periodically polls `detect_komorebi`. Mount-time poll plus a 5-second
+ * interval so the Dashboard reflects external state changes (user
+ * killing Komorebi via Task Manager, etc.) without needing a manual
+ * refresh. The interval is cheap — detection is a one-shot syscall.
+ */
+function useKomorebiDetection(): {
+  detection: KomorebiState | null;
+  refresh: () => Promise<void>;
+} {
   const [state, setState] = useState<KomorebiState | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    detectKomorebi()
-      .then((s) => {
-        if (!cancelled) setState(s);
-      })
-      .catch(() => {
-        if (!cancelled) setState({ installed: null, running: false });
-      });
-    return () => {
-      cancelled = true;
-    };
+
+  const refresh = useCallback(async () => {
+    try {
+      const s = await detectKomorebi();
+      setState(s);
+    } catch {
+      setState({ installed: null, running: false });
+    }
   }, []);
-  return state;
+
+  useEffect(() => {
+    void refresh();
+    const id = window.setInterval(() => {
+      void refresh();
+    }, 5_000);
+    return () => window.clearInterval(id);
+  }, [refresh]);
+
+  return { detection: state, refresh };
 }
 
 // ---- snapshot navigators ---------------------------------------------------
 
-/**
- * Best-effort accessors for Komorebi's `State` shape, which uses
- * `Ring<T>` wrappers `{ elements: T[], focused: number }` at every
- * collection level. We don't type the full shape — these helpers
- * absorb the navigation noise.
- */
 function getMonitors(snapshot: unknown): unknown[] {
   const state = (snapshot as { state?: unknown })?.state;
   return getRingElements(state, "monitors");

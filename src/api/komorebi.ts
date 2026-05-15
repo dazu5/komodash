@@ -64,3 +64,30 @@ export async function focusWorkspace(
 ): Promise<void> {
   await invoke<void>("focus_workspace", { monitorIndex, workspaceIndex });
 }
+
+/**
+ * Launch the Komorebi daemon (issue #15). Defaults to `--whkd --bar`
+ * per the issue body so the user's hotkeys and status bar come up
+ * alongside Komorebi.
+ *
+ * Returns once `komorebic start` exits — Komorebi is still warming up.
+ * Callers should rely on the Live state subscription (it reconnects
+ * within ~2 s) to know when the daemon is actually serving.
+ */
+export async function startKomorebi(
+  opts: { withWhkd?: boolean; withBar?: boolean } = {},
+): Promise<void> {
+  await invoke<void>("start_komorebi", {
+    withWhkd: opts.withWhkd ?? true,
+    withBar: opts.withBar ?? true,
+  });
+}
+
+/**
+ * Stop the Komorebi daemon (issue #15). Idempotent at the Rust layer —
+ * calling this when Komorebi is not running succeeds quietly. Used by
+ * Restart (after a crash) and as a standalone affordance.
+ */
+export async function stopKomorebi(): Promise<void> {
+  await invoke<void>("stop_komorebi");
+}
