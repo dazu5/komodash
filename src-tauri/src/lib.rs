@@ -15,6 +15,7 @@
 pub mod backup_store;
 pub mod command_catalog;
 pub mod diag_log;
+pub mod hotkey_validator;
 pub mod installer;
 pub mod komorebic;
 pub mod live_state;
@@ -27,10 +28,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use command_catalog::CommandCatalog;
+use hotkey_validator::ReservedChordList;
 use installer::{InstallResult, PackageManager, PackageManagerKind};
 use komorebic::{Komorebic, KomorebiState, WinKomorebic};
 use managed_config::ConfigKind;
 use tauri::{AppHandle, Emitter, Manager};
+use whkdrc_parser::Chord;
 use updates::{
     cached_or_fresh, newer_than_bundled, GithubReleaseSource, ReleaseSource, UpdateInfo,
 };
@@ -236,6 +239,17 @@ fn restore_backup(
     managed_config::restore_backup(&backups, kind, &id, &path).map_err(stringify_err)
 }
 
+// ---- Issue #12 -------------------------------------------------------------
+
+/// Return the bundled Windows-reserved chord list (per ADR-0009). The
+/// editor needs this so it can flag reserved chords inline as the user
+/// types them, without re-running the full validator. Parsed once and
+/// returned in canonical form.
+#[tauri::command]
+fn get_reserved_chords() -> Vec<Chord> {
+    ReservedChordList::bundled().chords().to_vec()
+}
+
 fn config_path_for(
     state: &tauri::State<'_, AppState>,
     kind: ConfigKind,
@@ -312,6 +326,7 @@ pub fn run() {
             write_config,
             list_backups,
             restore_backup,
+            get_reserved_chords,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
