@@ -1,0 +1,64 @@
+{
+  "$comment": "Komodash Bar Field-catalog overlay (ADR-0004). Maps komorebi-bar.exe --schema field paths to human labels, descriptions, sections, and widget hints. Same shape as field-catalog.json for the Static config (issue #11). Anything not in `fields` falls into the 'Other' section.",
+  "sections": [
+    {"id": "appearance", "label": "Appearance", "order": 10},
+    {"id": "monitor", "label": "Monitor placement", "order": 20},
+    {"id": "widgets", "label": "Widgets", "order": 30}
+  ],
+  "fields": {
+    "font_family": {
+      "label": "Font family",
+      "description": "The font the bar uses. Must be installed on the system — run `komorebi-bar --fonts` to see what's available.",
+      "section": "appearance",
+      "widget": "string"
+    },
+    "font_size": {
+      "label": "Font size (px)",
+      "description": "Bar text size. Affects bar height implicitly.",
+      "section": "appearance",
+      "widget": "number"
+    },
+    "theme": {
+      "label": "Theme",
+      "description": "Colour palette + accent. The Base16 palettes ship with the bar. Accepts a preset name (string) or a full theme object.",
+      "section": "appearance",
+      "widget": "json"
+    },
+    "transparency": {
+      "label": "Transparency",
+      "description": "Bar background transparency settings.",
+      "section": "appearance",
+      "widget": "object"
+    },
+    "monitor": {
+      "label": "Monitor placement",
+      "description": "Pick which monitor the bar appears on. Komodash automatically reserves the bar's pixels so tiled windows don't draw behind it.",
+      "section": "monitor",
+      "widget": "monitor-placement"
+    },
+    "position": {
+      "label": "Bar position",
+      "description": "Override the bar's pixel rectangle. Usually computed from `monitor` settings; override here for unusual layouts. Accepts an object like `{ \"start\": { \"x\": 0, \"y\": 0 }, \"end\": { \"x\": 1920, \"y\": 0 } }`.",
+      "section": "monitor",
+      "widget": "json"
+    },
+    "left_widgets": {
+      "label": "Left-side widgets",
+      "description": "Widgets shown on the left of the bar, in order: typically the Komorebi workspace indicator, layout label, and focused-window title.",
+      "section": "widgets",
+      "widget": "array"
+    },
+    "right_widgets": {
+      "label": "Right-side widgets",
+      "description": "Widgets shown on the right of the bar, in order: typically system widgets like clock, battery, network.",
+      "section": "widgets",
+      "widget": "array"
+    },
+    "bar_height": {
+      "label": "Bar height (px)",
+      "description": "Explicit bar height in pixels. Overrides the computed value from `font_size`.",
+      "section": "appearance",
+      "widget": "number"
+    }
+  }
+}

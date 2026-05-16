@@ -90,10 +90,13 @@ function NotRunningCta({
   crashed: boolean;
   onAfterStart: () => Promise<void>;
 }) {
-  // ⚠️ All hooks MUST run unconditionally — the early `return` for the
-  // "not installed" branch goes *after* every hook so the hook count
-  // never changes between renders (Rules of Hooks).
+  // ⚠️ Rules of Hooks: every hook MUST run unconditionally on every
+  // render. The early `!installed` return goes *after* every hook
+  // call — if it ran above, React would see a different hook count
+  // when `installed` flipped and crash with "Rendered more hooks
+  // than during the previous render."
   const [busy, setBusy] = useState(false);
+
   const onStart = useCallback(async () => {
     setBusy(true);
     try {
