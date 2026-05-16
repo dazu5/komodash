@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Routes, Route, NavLink } from "react-router-dom";
+import { listen } from "@tauri-apps/api/event";
+import { toast } from "sonner";
 import {
   LayoutDashboard,
   Settings,
@@ -18,6 +20,7 @@ import AppRulesPage from "@/pages/AppRules";
 import AboutPage from "@/pages/About";
 import { FirstRunWizard } from "@/pages/FirstRunWizard";
 import { detectFirstRunState } from "@/api/first-run";
+import { markCloseToTrayNoticeSeen } from "@/api/preferences";
 import { nextState, type WizardState } from "@/lib/first-run-fsm";
 import { useUndoStack } from "@/stores/undo-stack";
 import { UpdateBanner } from "@/components/update-banner";
@@ -40,6 +43,7 @@ const NAV: NavItem[] = [
 export default function App() {
   const wizard = useFirstRunGate();
   useGlobalUndoHotkey();
+  useCloseToTrayNotice();
 
   // Wait for the initial detection to land before rendering anything —
   // avoids flashing the main UI then yanking it away when the wizard
@@ -167,4 +171,28 @@ function useGlobalUndoHotkey() {
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [undo]);
+}
+
+/**
+ * One-shot toast the first time the window is closed-to-tray (#72).
+ * The Rust window-event handler only emits the event if the user
+ * hasn't yet acknowledged the behaviour change, so we just listen and
+ * mark-seen on first toast. Subsequent closes are silent.
+ */
+function useCloseToTrayNotice() {
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    void listen("komodash://close-to-tray-notice", () => {
+      toast(
+        "Komodash is still running in the tray. Right-click the tray icon to quit, or toggle this off on the About page.",
+        { duration: 8000 },
+      );
+      void markCloseToTrayNoticeSeen();
+    }).then((f) => {
+      unlisten = f;
+    });
+    return () => {
+      unlisten?.();
+    };
+  }, []);
 }
