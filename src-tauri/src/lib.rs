@@ -23,6 +23,7 @@ pub mod installer;
 pub mod komorebic;
 pub mod live_state;
 pub mod managed_config;
+pub mod preferences;
 pub mod schema_cache;
 pub mod starter_config;
 pub mod updates;
@@ -41,7 +42,11 @@ use komorebic::{silent_command, Komorebic, KomorebiState, WinKomorebic};
 use managed_config::ConfigKind;
 use std::collections::HashSet;
 use schema_cache::SchemaCache;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{
+    menu::{Menu, MenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    AppHandle, Emitter, Manager, WindowEvent,
+};
 use whkdrc_parser::Chord;
 use updates::{
     cached_or_fresh, newer_than_bundled, GithubReleaseSource, ReleaseSource, UpdateInfo,
@@ -976,6 +981,106 @@ fn write_starter_config(state: tauri::State<'_, AppState>) -> Result<(), String>
     Ok(())
 }
 
+// ---- preferences + tray (issue #72) ---------------------------------------
+
+/// Load preferences from disk on demand. Used by the frontend to drive
+/// the Behaviour settings card and by the close-handler to decide
+/// whether to hide or exit.
+#[tauri::command]
+fn get_preferences() -> preferences::Preferences {
+    match preferences::canonical_path() {
+        Some(path) => preferences::load(&path),
+        None => preferences::Preferences::default(),
+    }
+}
+
+/// Toggle close-to-tray behaviour and persist.
+#[tauri::command]
+fn set_close_to_tray(enabled: bool) -> Result<(), String> {
+    let path = preferences::canonical_path()
+        .ok_or_else(|| "no config dir available on this platform".to_string())?;
+    let mut prefs = preferences::load(&path);
+    prefs.close_to_tray = enabled;
+    preferences::save(&path, &prefs).map_err(stringify_err)
+}
+
+/// Mark the one-shot close-to-tray notice as seen so we don't toast
+/// again on subsequent closes.
+#[tauri::command]
+fn mark_close_to_tray_notice_seen() -> Result<(), String> {
+    let path = preferences::canonical_path()
+        .ok_or_else(|| "no config dir available on this platform".to_string())?;
+    let mut prefs = preferences::load(&path);
+    prefs.close_to_tray_notice_seen = true;
+    preferences::save(&path, &prefs).map_err(stringify_err)
+}
+
+/// Build the system-tray icon with a minimal Show / Quit menu.
+/// Left-clicking the icon also shows the window — matches the
+/// muscle memory most Windows users have for taskbar icons.
+fn install_tray(app: &AppHandle) -> tauri::Result<()> {
+    let show = MenuItem::with_id(app, "show", "Show Komodash", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit Komodash", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show, &quit])?;
+
+    let icon = app
+        .default_window_icon()
+        .ok_or_else(|| tauri::Error::Anyhow(anyhow::anyhow!("no default window icon bundled")))?
+        .clone();
+
+    TrayIconBuilder::with_id("main")
+        .icon(icon)
+        .tooltip("Komodash")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "show" => show_main_window(app),
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main_window(tray.app_handle());
+            }
+        })
+        .build(app)?;
+    Ok(())
+}
+
+fn show_main_window(app: &AppHandle) {
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.show();
+        let _ = win.unminimize();
+        let _ = win.set_focus();
+    }
+}
+
+/// Window-event hook. On a `CloseRequested` event, consult preferences:
+/// if `close_to_tray` is enabled (default), hide the window instead of
+/// letting Tauri destroy it, and emit an event so the frontend can
+/// show its one-shot notice on the first close.
+fn handle_window_event(window: &tauri::Window, event: &WindowEvent) {
+    if let WindowEvent::CloseRequested { api, .. } = event {
+        let prefs = match preferences::canonical_path() {
+            Some(p) => preferences::load(&p),
+            None => preferences::Preferences::default(),
+        };
+        if !prefs.close_to_tray {
+            return;
+        }
+        api.prevent_close();
+        let _ = window.hide();
+        if !prefs.close_to_tray_notice_seen {
+            let _ = window.app_handle().emit("komodash://close-to-tray-notice", ());
+        }
+    }
+}
+
 /// Run `komorebic enable-autostart` to plant the Startup-folder
 /// shortcut so Komorebi launches on login.
 #[tauri::command]
@@ -1090,6 +1195,7 @@ pub fn run() {
     let (state, komorebic_for_live) = AppState::production();
 
     tauri::Builder::default()
+        .on_window_event(handle_window_event)
         // Single-instance enforcement per ADR-0008. The mutex name
         // `Local\komodash-singleton` is process-local to the current Windows
         // session. On a second launch the closure runs in the EXISTING
@@ -1109,6 +1215,11 @@ pub fn run() {
             // (issue #6). The task lives for the lifetime of the process
             // and reconnects on its own — no shutdown handling for v1.
             live_state::spawn(app.handle().clone(), komorebic_for_live.clone());
+
+            // System tray (issue #72). Close-to-tray default-on; the
+            // tray exposes Show / Quit so the user can resurrect or
+            // exit the app without the main window.
+            install_tray(app.handle())?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1157,6 +1268,9 @@ pub fn run() {
             toggle_focused_window_float,
             close_focused_window,
             move_focused_window_to_workspace,
+            get_preferences,
+            set_close_to_tray,
+            mark_close_to_tray_notice_seen,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
