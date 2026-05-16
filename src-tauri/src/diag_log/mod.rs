@@ -125,7 +125,7 @@ pub fn build_diagnostic_info(komorebic: &dyn Komorebic) -> String {
 /// process without an explicit compatibility manifest.
 fn os_version_line() -> String {
     if cfg!(windows) {
-        match std::process::Command::new("cmd").args(["/c", "ver"]).output() {
+        match crate::komorebic::silent_command("cmd").args(["/c", "ver"]).output() {
             Ok(out) if out.status.success() => {
                 let raw = String::from_utf8_lossy(&out.stdout);
                 let trimmed = raw.trim();
