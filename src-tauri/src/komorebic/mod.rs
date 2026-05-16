@@ -210,6 +210,61 @@ pub trait Komorebic: Send + Sync {
     fn restart_bar(&self) -> Result<()> {
         anyhow::bail!("restart_bar is not implemented for this Komorebic")
     }
+
+    /// Set a monitor's runtime work-area offset (issue #19 polish for
+    /// the bar-move retile case). Shells out to
+    /// `komorebic monitor-work-area-offset <index> <l> <t> <r> <b>`.
+    ///
+    /// Used to **release** a monitor's reserved bar pixels when the
+    /// user moves the bar to a different monitor — without this,
+    /// Komorebi keeps the abandoned monitor's old work-area offset and
+    /// the windows on it don't reflow.
+    fn monitor_work_area_offset(
+        &self,
+        _index: u32,
+        _left: i32,
+        _top: i32,
+        _right: i32,
+        _bottom: i32,
+    ) -> Result<()> {
+        anyhow::bail!("monitor_work_area_offset is not implemented for this Komorebic")
+    }
+}
+
+/// Force-terminate a process by PID via Win32 `TerminateProcess`.
+/// Returns `true` on success.
+///
+/// Background: on at least one Windows 11 host we saw `taskkill.exe`
+/// hang for 60 s on `/F /PID <pid>` calls AND not actually kill the
+/// process. PowerShell's `Stop-Process -Force` worked in 30 ms on the
+/// same host. Both nominally call `TerminateProcess`, so taskkill's
+/// hang is most likely a stuck WMI/RPC path inside the tool. We
+/// bypass it entirely by calling `OpenProcess` + `TerminateProcess`
+/// directly via `windows-sys`.
+#[cfg(windows)]
+fn win32_terminate_process(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, TerminateProcess, PROCESS_TERMINATE,
+    };
+
+    // SAFETY: PROCESS_TERMINATE is a valid access right. The handle
+    // returned is null on failure (e.g. process gone, access denied),
+    // which we check before calling Terminate/Close.
+    let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
+    if handle.is_null() {
+        return false;
+    }
+    let killed = unsafe { TerminateProcess(handle, 1) } != 0;
+    unsafe { CloseHandle(handle) };
+    killed
+}
+
+#[cfg(not(windows))]
+fn win32_terminate_process(_pid: u32) -> bool {
+    // Non-Windows builds compile (e.g. host-side tests via the trait
+    // fakes); they never reach this path.
+    false
 }
 
 /// Production implementation.
@@ -380,18 +435,130 @@ impl Komorebic for WinKomorebic {
     }
 
     fn restart_bar(&self) -> Result<()> {
-        // Same shape as `restart_whkd` from #20.
-        let _ = Command::new("taskkill")
-            .args(["/F", "/IM", "komorebi-bar.exe"])
-            .output();
-        std::thread::sleep(std::time::Duration::from_millis(150));
+        // Launch `komorebi-bar.exe` directly rather than going through
+        // `komorebic start --bar`. The latter is "start komorebi.exe
+        // with the bar" — when komorebi.exe is already running, it
+        // hangs for ~60s waiting for the daemon to be in a freshly-
+        // started state.
+        //
+        // Killing the old bar: iterations 1 & 2 both failed.
+        //   v1 used `taskkill /F /IM` — sometimes hung, sometimes
+        //     left zombies (race on the image-name lookup).
+        //   v2 used sysinfo's `Process::kill()` — on this user's box
+        //     it appears to silently fail (returns without killing),
+        //     so the spawn-on-timeout path kicks in → ghosting.
+        //   v3 (this code): enumerate PIDs via sysinfo (reliable),
+        //     then kill each via `taskkill /F /PID <pid>` (no /IM
+        //     race; this is the same path PowerShell's Stop-Process
+        //     uses under the hood). Tracing at each step so we can
+        //     verify in production logs.
+        let t0 = std::time::Instant::now();
+        use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, RefreshKind, System};
+        let mut sys = System::new_with_specifics(
+            RefreshKind::new().with_processes(ProcessRefreshKind::new()),
+        );
+        let target_pids: Vec<u32> = sys
+            .processes()
+            .iter()
+            .filter(|(_, p)| {
+                p.name()
+                    .to_string_lossy()
+                    .eq_ignore_ascii_case("komorebi-bar.exe")
+            })
+            .map(|(pid, _)| pid.as_u32())
+            .collect();
+        tracing::info!(
+            "restart_bar: found {} bar process(es) ({:?}) — enum took {:?}",
+            target_pids.len(),
+            target_pids,
+            t0.elapsed()
+        );
+
+        // Kill each by PID via raw Win32 TerminateProcess.
+        //
+        // We tried taskkill (both /IM and /PID variants) earlier in
+        // this issue; on at least one Windows 11 host taskkill takes
+        // 60+ seconds AND fails to actually kill the process — most
+        // likely a stuck WMI/RPC path inside taskkill.exe.
+        // PowerShell's `Stop-Process -Force` works in ~30 ms on the
+        // same host because it skips taskkill and calls
+        // TerminateProcess via P/Invoke. We do the same here via the
+        // windows-sys binding so we don't even pay the powershell
+        // spawn cost.
+        for pid in &target_pids {
+            let kt = std::time::Instant::now();
+            let killed = win32_terminate_process(*pid);
+            tracing::info!(
+                "restart_bar: TerminateProcess({}) -> {} in {:?}",
+                pid,
+                if killed { "ok" } else { "err" },
+                kt.elapsed()
+            );
+        }
+
+        // Poll for absence using sysinfo with a TARGETED refresh
+        // (just our PIDs, not all processes). Cheap enough to tick
+        // every 20 ms with negligible overhead.
+        let poll_start = std::time::Instant::now();
+        let deadline = poll_start + std::time::Duration::from_millis(500);
+        let sysinfo_pids: Vec<sysinfo::Pid> =
+            target_pids.iter().map(|p| sysinfo::Pid::from_u32(*p)).collect();
+        loop {
+            sys.refresh_processes(ProcessesToUpdate::Some(&sysinfo_pids), true);
+            let still_alive = sysinfo_pids.iter().any(|p| sys.process(*p).is_some());
+            if !still_alive {
+                tracing::info!(
+                    "restart_bar: all bar PIDs gone after {:?}",
+                    poll_start.elapsed()
+                );
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                tracing::warn!(
+                    "restart_bar: some bar PIDs survived 500 ms — spawning anyway"
+                );
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+
+        let spawn_start = std::time::Instant::now();
+        let bar_path = self.locate_bar()?;
+        Command::new(&bar_path).spawn().map_err(|e| {
+            anyhow::anyhow!("failed to launch komorebi-bar.exe: {e}")
+        })?;
+        tracing::info!(
+            "restart_bar: spawned new bar in {:?}, total elapsed {:?}",
+            spawn_start.elapsed(),
+            t0.elapsed()
+        );
+        Ok(())
+    }
+
+    fn monitor_work_area_offset(
+        &self,
+        index: u32,
+        left: i32,
+        top: i32,
+        right: i32,
+        bottom: i32,
+    ) -> Result<()> {
         let path = self
             .locate()
             .ok_or_else(|| anyhow::anyhow!("komorebic.exe could not be located"))?;
-        let output = Command::new(&path).args(["start", "--bar"]).output()?;
+        let output = Command::new(&path)
+            .args([
+                "monitor-work-area-offset",
+                &index.to_string(),
+                &left.to_string(),
+                &top.to_string(),
+                &right.to_string(),
+                &bottom.to_string(),
+            ])
+            .output()?;
         if !output.status.success() {
             anyhow::bail!(
-                "komorebic start --bar failed: {}",
+                "komorebic monitor-work-area-offset failed: {}",
                 String::from_utf8_lossy(&output.stderr).trim()
             );
         }
