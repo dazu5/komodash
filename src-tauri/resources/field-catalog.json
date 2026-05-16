@@ -1,0 +1,145 @@
+{
+  "$comment": "Komodash Field catalog overlay (ADR-0004). Maps Komorebi static-config-schema paths to human labels, descriptions, sections, and widget hints. Anything not in `fields` falls into the 'Other' section with raw schema metadata. Maintained in-repo; ships in-binary.",
+  "sections": [
+    {"id": "borders", "label": "Borders", "order": 10},
+    {"id": "animations", "label": "Animations", "order": 20},
+    {"id": "layouts", "label": "Layouts & padding", "order": 30},
+    {"id": "focus", "label": "Focus & mouse", "order": 40},
+    {"id": "behaviour", "label": "Window behaviour", "order": 50},
+    {"id": "bar", "label": "Status bar", "order": 60}
+  ],
+  "fields": {
+    "border": {
+      "label": "Show window border",
+      "description": "Draw a coloured border around the focused window so it's easy to see what has focus.",
+      "section": "borders",
+      "widget": "checkbox"
+    },
+    "border_width": {
+      "label": "Border width (px)",
+      "description": "Thickness of the focus border in pixels.",
+      "section": "borders",
+      "widget": "number"
+    },
+    "border_offset": {
+      "label": "Border offset (px)",
+      "description": "Distance between the window edge and the border. Negative values overlap.",
+      "section": "borders",
+      "widget": "number"
+    },
+    "border_style": {
+      "label": "Border style",
+      "description": "How the border is drawn — system rounded, square, or follows Windows 11 corners.",
+      "section": "borders",
+      "widget": "select"
+    },
+    "border_colours": {
+      "label": "Border colours",
+      "description": "Per-state colours: focused window, unfocused window, monocle layout, stack indicator.",
+      "section": "borders",
+      "widget": "object"
+    },
+    "animation": {
+      "label": "Animation settings",
+      "description": "Whether windows animate when moved or resized, and how fast.",
+      "section": "animations",
+      "widget": "object"
+    },
+    "default_workspace_padding": {
+      "label": "Workspace padding (px)",
+      "description": "Space between the workspace edge and the tiled windows.",
+      "section": "layouts",
+      "widget": "number"
+    },
+    "default_container_padding": {
+      "label": "Container padding (px)",
+      "description": "Space between tiled windows.",
+      "section": "layouts",
+      "widget": "number"
+    },
+    "default_layout": {
+      "label": "Default layout",
+      "description": "How windows tile when first added to a workspace. Per-workspace overrides take precedence.",
+      "section": "layouts",
+      "widget": "select"
+    },
+    "mouse_follows_focus": {
+      "label": "Mouse follows focus",
+      "description": "Move the mouse cursor to the focused window when focus changes via hotkey.",
+      "section": "focus",
+      "widget": "checkbox"
+    },
+    "focus_follows_mouse": {
+      "label": "Focus follows mouse",
+      "description": "Change focus to whatever window the mouse hovers over.",
+      "section": "focus",
+      "widget": "select"
+    },
+    "cross_monitor_move_behaviour": {
+      "label": "Cross-monitor move behaviour",
+      "description": "What happens when you move a window past the edge of one monitor onto the next.",
+      "section": "behaviour",
+      "widget": "select"
+    },
+    "cross_boundary_behaviour": {
+      "label": "Cross-boundary focus behaviour",
+      "description": "What happens when focus tries to leave the current monitor or workspace.",
+      "section": "behaviour",
+      "widget": "select"
+    },
+    "unmanaged_window_operation_behaviour": {
+      "label": "Unmanaged-window operation behaviour",
+      "description": "Whether tiling operations should still apply when an unmanaged window is focused.",
+      "section": "behaviour",
+      "widget": "select"
+    },
+    "window_hiding_behaviour": {
+      "label": "Window-hiding behaviour",
+      "description": "How Komorebi hides windows when switching workspaces — Hide is fastest, Minimize is friendliest to taskbar pinning.",
+      "section": "behaviour",
+      "widget": "select"
+    },
+    "global_work_area_offset": {
+      "label": "Global work-area offset",
+      "description": "Reserve space at the edges of every monitor for taskbars, panels, or a Komorebi bar.",
+      "section": "layouts",
+      "widget": "object"
+    },
+    "stackbar": {
+      "label": "Stack bar",
+      "description": "Tab strip shown above stacked windows so you can see what's behind the visible one.",
+      "section": "bar",
+      "widget": "object"
+    },
+    "bar_configurations": {
+      "label": "Bar configurations",
+      "description": "Paths to Komorebi bar configuration files to launch alongside Komorebi.",
+      "section": "bar",
+      "widget": "array"
+    },
+    "transparency": {
+      "label": "Window transparency",
+      "description": "Make unfocused windows partly transparent so the focused one stands out.",
+      "section": "behaviour",
+      "widget": "object"
+    },
+    "monitors": {
+      "label": "Per-monitor settings",
+      "description": "Workspace count and overrides for each monitor. Komodash exposes this in a dedicated view.",
+      "section": "layouts",
+      "widget": "monitors"
+    },
+    "applications": {
+      "label": "App Rules",
+      "description": "Ignore / float / workspace-pin behaviour per application. Edit on the App Rules page.",
+      "section": "behaviour",
+      "widget": "applications"
+    },
+    "theme": {
+      "label": "Theme",
+      "description": "Colour palette applied to the bar, stack indicator, and border colours when no per-state override is set.",
+      "section": "borders",
+      "widget": "object"
+    }
+  }
+}

@@ -17,6 +17,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
+tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 anyhow = "1"
@@ -28,11 +29,24 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "5"
 once_cell = "1"
+which = "7"
+regex = "1"
+sysinfo = { version = "0.32", default-features = false, features = ["system"] }
+semver = { version = "1", features = ["serde"] }
+tracing-appender = "0.2"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
+# Tolerant JSON parser for the Static-config read fallback (issue #17 /
+# ADR-0003): we accept JSON5-style trailing commas + comments on read,
+# always re-emit canonical JSON on write.
+json5 = "0.4"
+
+[dev-dependencies]
+tempfile = "3"
 
 # Windows-only: named-pipe client for komorebi subscribe-pipe
 [target.'cfg(windows)'.dependencies]
 tokio = { version = "1", features = ["net"] }
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Pipes", "Win32_Storage_FileSystem"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Pipes", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
 
 [profile.release]
 panic = "abort"
