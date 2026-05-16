@@ -129,9 +129,9 @@ where
     F: FnMut(&str),
 {
     use std::io::{BufRead, BufReader};
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
 
-    let mut child = Command::new(cmd)
+    let mut child = crate::komorebic::silent_command(cmd)
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

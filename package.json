@@ -1,7 +1,7 @@
 {
   "name": "komodash",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "A dashboard for customizing the Komorebi tiling window manager on Windows.",
   "scripts": {

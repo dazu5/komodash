@@ -15,6 +15,30 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::Result;
+
+/// Spawn-without-a-console-window flag on Windows. Without this,
+/// every `Command::new(komorebic).output()` flashes a CMD window for
+/// the lifetime of the subprocess and briefly steals foreground focus
+/// — which with `mouse_follows_focus: true` cascades into Komorebi
+/// re-emitting focus events and the focus border re-animating. See
+/// issue #62.
+#[cfg(windows)]
+pub(crate) const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// Build a `Command` that won't flash a console window on Windows.
+/// On non-Windows this is just `Command::new(program)`.
+#[cfg(windows)]
+pub(crate) fn silent_command<S: AsRef<std::ffi::OsStr>>(program: S) -> Command {
+    use std::os::windows::process::CommandExt;
+    let mut cmd = Command::new(program);
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd
+}
+
+#[cfg(not(windows))]
+pub(crate) fn silent_command<S: AsRef<std::ffi::OsStr>>(program: S) -> Command {
+    Command::new(program)
+}
 use once_cell::sync::Lazy;
 use regex::Regex;
 use semver::Version;
@@ -396,7 +420,7 @@ impl WinKomorebic {
 
     /// Read `komorebic --version` and parse out the first-line version.
     fn read_version(&self, path: &Path) -> Result<String> {
-        let output = Command::new(path).arg("--version").output()?;
+        let output = silent_command(path).arg("--version").output()?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         parse_version(&stdout)
             .ok_or_else(|| anyhow::anyhow!("could not parse version from komorebic --version"))
@@ -462,7 +486,7 @@ impl Komorebic for WinKomorebic {
         let path = self
             .locate()
             .ok_or_else(|| anyhow::anyhow!("komorebic.exe could not be located"))?;
-        let output = Command::new(&path).arg("static-config-schema").output()?;
+        let output = silent_command(&path).arg("static-config-schema").output()?;
         if !output.status.success() {
             anyhow::bail!(
                 "komorebic static-config-schema failed: {}",
@@ -512,7 +536,7 @@ impl Komorebic for WinKomorebic {
         let path = self
             .locate()
             .ok_or_else(|| anyhow::anyhow!("komorebic.exe could not be located"))?;
-        let output = Command::new(&path).arg("stop").output()?;
+        let output = silent_command(&path).arg("stop").output()?;
         if output.status.success() {
             return Ok(());
         }
@@ -545,7 +569,7 @@ impl Komorebic for WinKomorebic {
             let path = self
                 .locate()
                 .ok_or_else(|| anyhow::anyhow!("komorebic.exe could not be located"))?;
-            let output = Command::new(&path).args(["start", "--whkd"]).output()?;
+            let output = silent_command(&path).args(["start", "--whkd"]).output()?;
             if !output.status.success() {
                 anyhow::bail!(
                     "komorebic start --whkd failed: {}",
@@ -561,7 +585,7 @@ impl Komorebic for WinKomorebic {
         // dir. Locate it from komorebic's path so we work for winget,
         // Scoop, or manual installs that may not have it on PATH.
         let bar_path = self.locate_bar()?;
-        let output = Command::new(&bar_path).arg("--schema").output()?;
+        let output = silent_command(&bar_path).arg("--schema").output()?;
         if !output.status.success() {
             anyhow::bail!(
                 "komorebi-bar --schema failed: {}",
@@ -581,7 +605,7 @@ impl Komorebic for WinKomorebic {
         // through the shared helper rather than calling taskkill.
         restart_named_process(&WinProcessOps, "komorebi-bar.exe", || {
             let bar_path = self.locate_bar()?;
-            Command::new(&bar_path).spawn().map_err(|e| {
+            silent_command(&bar_path).spawn().map_err(|e| {
                 anyhow::anyhow!("failed to launch komorebi-bar.exe: {e}")
             })?;
             Ok(())
@@ -599,7 +623,7 @@ impl Komorebic for WinKomorebic {
         let path = self
             .locate()
             .ok_or_else(|| anyhow::anyhow!("komorebic.exe could not be located"))?;
-        let output = Command::new(&path)
+        let output = silent_command(&path)
             .args([
                 "monitor-work-area-offset",
                 &index.to_string(),
@@ -646,7 +670,7 @@ impl WinKomorebic {
         let path = self
             .locate()
             .ok_or_else(|| anyhow::anyhow!("komorebic.exe could not be located"))?;
-        let mut cmd = Command::new(&path);
+        let mut cmd = silent_command(&path);
         for arg in extra {
             cmd.arg(arg);
         }
@@ -669,7 +693,7 @@ impl WinKomorebic {
         let path = self
             .locate()
             .ok_or_else(|| anyhow::anyhow!("komorebic.exe could not be located"))?;
-        let output = Command::new(&path).args(args).output()?;
+        let output = silent_command(&path).args(args).output()?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             anyhow::bail!("komorebic {} failed: {}", args.join(" "), stderr.trim());
@@ -690,7 +714,7 @@ impl WinKomorebic {
         let komorebic = self
             .locate()
             .ok_or_else(|| anyhow::anyhow!("komorebic.exe could not be located"))?;
-        let output = Command::new(&komorebic).arg(sub).output()?;
+        let output = silent_command(&komorebic).arg(sub).output()?;
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if !stdout.is_empty() {
             return Ok(PathBuf::from(stdout));

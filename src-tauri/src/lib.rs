@@ -36,7 +36,7 @@ use command_catalog::CommandCatalog;
 use field_catalog::FieldCatalog;
 use hotkey_validator::ReservedChordList;
 use installer::{InstallResult, PackageManager, PackageManagerKind};
-use komorebic::{Komorebic, KomorebiState, WinKomorebic};
+use komorebic::{silent_command, Komorebic, KomorebiState, WinKomorebic};
 use managed_config::ConfigKind;
 use std::collections::HashSet;
 use schema_cache::SchemaCache;
@@ -688,7 +688,7 @@ async fn fetch_community_catalog(
         let info = client
             .discover()
             .ok_or_else(|| anyhow::anyhow!("komorebic.exe could not be located"))?;
-        let output = std::process::Command::new(&info.path)
+        let output = silent_command(&info.path)
             .arg("fetch-app-specific-configuration")
             .output()?;
         if !output.status.success() {
@@ -827,7 +827,7 @@ async fn move_focused_window_to_workspace(
         // Focus target monitor first so move-to-workspace lands on the
         // right one (komorebic move-to-workspace operates relative to
         // the focused monitor's workspace ring).
-        let focus_out = std::process::Command::new(&info.path)
+        let focus_out = silent_command(&info.path)
             .args(["focus-monitor", &monitor_str])
             .output()?;
         if !focus_out.status.success() {
@@ -836,7 +836,7 @@ async fn move_focused_window_to_workspace(
                 String::from_utf8_lossy(&focus_out.stderr).trim()
             );
         }
-        let move_out = std::process::Command::new(&info.path)
+        let move_out = silent_command(&info.path)
             .args(["move-to-workspace", &workspace_str])
             .output()?;
         if !move_out.status.success() {
@@ -870,7 +870,7 @@ async fn get_visible_windows(
         let info = client
             .discover()
             .ok_or_else(|| anyhow::anyhow!("komorebic.exe could not be located"))?;
-        let output = std::process::Command::new(&info.path)
+        let output = silent_command(&info.path)
             .arg("visible-windows")
             .output()?;
         if !output.status.success() {
@@ -995,7 +995,7 @@ fn run_komorebic_subcommand(
     let info = client
         .discover()
         .ok_or_else(|| anyhow::anyhow!("komorebic.exe could not be located"))?;
-    let output = std::process::Command::new(&info.path)
+    let output = silent_command(&info.path)
         .arg(subcommand)
         .output()?;
     if !output.status.success() {
