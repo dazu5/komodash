@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { CircleCheck, Layout, PlayCircle, RotateCw } from "lucide-react";
+import { CircleCheck, Layout, PlayCircle, RotateCw, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 
 import { PageHeader } from "@/components/page-shell";
@@ -14,7 +14,9 @@ import {
 import type { FieldCatalog } from "@/api/field-catalog";
 import { detectKomorebi } from "@/api/komorebi";
 import type { JsonSchema } from "@/api/schema";
+import { buildPillPreset } from "@/lib/pill-bar-preset";
 import { cn } from "@/lib/utils";
+import { useLiveState } from "@/stores/live-state";
 
 /**
  * The Status Bar page (issue #19).
@@ -41,6 +43,24 @@ export default function BarConfigPage() {
     setField,
     apply,
   } = useBufferedConfig({ kind: "bar", applyFn: applyBarConfig });
+
+  const snapshot = useLiveState((s) => s.snapshot);
+
+  const onApplyPill = useCallback(() => {
+    const targetIndex = extractMonitorIndex(JSON.stringify(value)) ?? 0;
+    const monitor = pickLiveMonitor(snapshot, targetIndex);
+    const patch = buildPillPreset({
+      monitorIndex: targetIndex,
+      monitorWidth: monitor?.width ?? 1920,
+      monitorHeight: monitor?.height ?? 1080,
+    });
+    for (const [k, v] of Object.entries(patch)) {
+      setField(k, v);
+    }
+    toast.success(
+      "Pill style queued — review the preview, then Apply to restart the bar",
+    );
+  }, [setField, snapshot, value]);
 
   const onApply = useCallback(async () => {
     try {
@@ -123,6 +143,19 @@ export default function BarConfigPage() {
             Applied just now
           </span>
         )}
+        <button
+          type="button"
+          onClick={onApplyPill}
+          className={cn(
+            "ml-auto inline-flex items-center gap-1.5 rounded-md border border-border",
+            "bg-secondary hover:bg-secondary/80 px-3 py-1.5 text-sm",
+            "transition-colors",
+          )}
+          title="Patch the bar config with a centered rounded-pill layout. Click Apply to actually restart the bar."
+        >
+          <Sparkles className="h-4 w-4" />
+          Apply pill style
+        </button>
       </div>
 
       <section className="space-y-2">
@@ -244,6 +277,41 @@ function extractMonitorIndex(serialised: string | null): number | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Pull the {width, height} of the named monitor from the live-state
+ * snapshot. Returns null when the snapshot isn't available yet
+ * (Komorebi not running, first event not yet received) — the caller
+ * substitutes a sensible default in that case.
+ */
+function pickLiveMonitor(
+  snapshot: unknown,
+  index: number,
+): { width: number; height: number } | null {
+  const state = (snapshot as { state?: unknown } | null)?.state;
+  if (!state || typeof state !== "object") return null;
+  const ring = (state as Record<string, unknown>).monitors as
+    | { elements?: unknown[] }
+    | undefined;
+  const elements = Array.isArray(ring?.elements) ? ring.elements : [];
+  const m = elements[index];
+  if (!m || typeof m !== "object") return null;
+  const size = (m as Record<string, unknown>).size;
+  if (!size || typeof size !== "object") return null;
+  const s = size as Record<string, unknown>;
+  const left = numberOr(s.left, 0);
+  const right = numberOr(s.right, 0);
+  const top = numberOr(s.top, 0);
+  const bottom = numberOr(s.bottom, 0);
+  const width = right - left;
+  const height = bottom - top;
+  if (width <= 0 || height <= 0) return null;
+  return { width, height };
+}
+
+function numberOr(v: unknown, fallback: number): number {
+  return typeof v === "number" && Number.isFinite(v) ? v : fallback;
 }
 
 function useKomorebiRunning() {
