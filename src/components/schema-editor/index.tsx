@@ -4,6 +4,7 @@ import type { ApplyError } from "@/api/apply";
 import type { FieldCatalog, FieldOverlay, SectionSpec } from "@/api/field-catalog";
 import type { JsonSchema } from "@/api/schema";
 import { cn } from "@/lib/utils";
+import { extractLayoutOptions } from "@/lib/workspaces";
 
 import { pickWidget, type WidgetKey } from "./widget-picker";
 import {
@@ -16,6 +17,7 @@ import {
   ObjectPreview,
   StringWidget,
   UnknownWidget,
+  WorkspacesWidget,
 } from "./widgets";
 
 /**
@@ -61,6 +63,7 @@ export function SchemaEditor({
     () => groupFieldsBySection(schema, catalog),
     [schema, catalog],
   );
+  const layoutOptions = useMemo(() => extractLayoutOptions(schema), [schema]);
   const ro = readonly ?? false;
 
   if (grouped.length === 0) {
@@ -81,6 +84,7 @@ export function SchemaEditor({
           fields={g.fields}
           value={value}
           readonly={ro}
+          layoutOptions={layoutOptions}
           onFieldChange={onFieldChange}
         />
       ))}
@@ -106,12 +110,14 @@ function SectionBlock({
   fields,
   value,
   readonly,
+  layoutOptions,
   onFieldChange,
 }: {
   section: SectionSpec;
   fields: GroupedField[];
   value: Record<string, unknown> | null;
   readonly: boolean;
+  layoutOptions: string[];
   onFieldChange?: (key: string, next: unknown) => void;
 }) {
   return (
@@ -126,6 +132,7 @@ function SectionBlock({
             field={f}
             value={value?.[f.name]}
             readonly={readonly}
+            layoutOptions={layoutOptions}
             onChange={
               onFieldChange ? (next) => onFieldChange(f.name, next) : undefined
             }
@@ -142,11 +149,13 @@ function FieldRow({
   field,
   value,
   readonly,
+  layoutOptions,
   onChange,
 }: {
   field: GroupedField;
   value: unknown;
   readonly: boolean;
+  layoutOptions: string[];
   onChange?: (next: unknown) => void;
 }) {
   const widget = pickWidget(field.schema, field.overlay);
@@ -171,6 +180,7 @@ function FieldRow({
           readonly={readonly}
           onChange={onChange}
           enumValues={enumValues}
+          layoutOptions={layoutOptions}
         />
         {description && (
           <p className="text-xs text-muted-foreground">{description}</p>
@@ -186,12 +196,14 @@ function FieldWidget({
   readonly,
   onChange,
   enumValues,
+  layoutOptions,
 }: {
   widget: WidgetKey;
   value: unknown;
   readonly: boolean;
   onChange?: (next: unknown) => void;
   enumValues: string[];
+  layoutOptions: string[];
 }) {
   switch (widget) {
     case "checkbox":
@@ -269,6 +281,18 @@ function FieldWidget({
         <MonitorPlacementWidget
           value={value}
           readonly={false}
+          onChange={onChange}
+        />
+      );
+    case "workspaces":
+      // Structured editor for monitors[].workspaces[] (#64). Even
+      // in read-only mode, render the structured view — but the
+      // widget itself disables the inputs.
+      return (
+        <WorkspacesWidget
+          value={value}
+          readonly={readonly}
+          layoutOptions={layoutOptions}
           onChange={onChange}
         />
       );

@@ -124,10 +124,10 @@
       "widget": "object"
     },
     "monitors": {
-      "label": "Per-monitor settings",
-      "description": "Workspace count and overrides for each monitor. Komodash exposes this in a dedicated view.",
+      "label": "Per-monitor workspaces",
+      "description": "Named workspaces and per-workspace layouts for each monitor. Leave empty to use Komorebi's anonymous defaults.",
       "section": "layouts",
-      "widget": "monitors"
+      "widget": "workspaces"
     },
     "applications": {
       "label": "App Rules",

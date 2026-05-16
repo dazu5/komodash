@@ -1,7 +1,23 @@
 import { useEffect, useId, useRef, useState } from "react";
-import { AlertCircle, Check, Monitor as MonitorIcon, X } from "lucide-react";
+import {
+  AlertCircle,
+  Check,
+  Monitor as MonitorIcon,
+  Plus,
+  Trash2,
+  X,
+} from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import {
+  addWorkspace,
+  createMonitors,
+  parseMonitors,
+  parseWorkspaces,
+  removeWorkspace,
+  updateWorkspaceField,
+  type RawMonitor,
+} from "@/lib/workspaces";
 import { useLiveState } from "@/stores/live-state";
 
 /**
@@ -605,6 +621,262 @@ function monitorLabel(m: MonitorOption): string {
   if (m.width && m.height) parts.push(`${m.width}×${m.height}`);
   if (m.name) parts.push(m.name);
   return parts.join(" — ");
+}
+
+/**
+ * Structured editor for `monitors[].workspaces[]` (issue #64). Replaces
+ * the raw-JSON fallback so non-technical users can name workspaces and
+ * pick layouts without touching JSON — per the [[no-json-as-ux]]
+ * principle. Lives in the Static config pipeline so edits Live-apply
+ * via [[hybrid-save-model]] (ADR-0006).
+ *
+ * Tabs map 1:1 to monitors in the array (NOT to live monitors — those
+ * just supply friendlier tab labels). When the array is empty / null
+ * we render an explanatory empty-state and offer to bootstrap an
+ * explicit `monitors` array sized to the live monitor count.
+ */
+export function WorkspacesWidget({
+  value,
+  readonly,
+  layoutOptions,
+  onChange,
+}: {
+  value: unknown;
+  readonly: boolean;
+  /** Pulled from the root schema's `$defs.DefaultLayout` by the
+   *  SchemaEditor. Passed in so this widget doesn't need to walk the
+   *  full schema itself. */
+  layoutOptions: string[];
+  onChange?: (next: unknown) => void;
+}) {
+  const snapshot = useLiveState((s) => s.snapshot);
+  const liveMonitors = extractMonitorOptions(snapshot);
+  const monitors = parseMonitors(value);
+  const [activeTab, setActiveTab] = useState(0);
+
+  // Clamp activeTab when the array shrinks (e.g. after a hypothetical
+  // future remove-monitor). Cheap; runs every render.
+  const safeTab = monitors.length === 0 ? 0 : Math.min(activeTab, monitors.length - 1);
+
+  if (monitors.length === 0) {
+    return (
+      <EmptyMonitorsState
+        readonly={readonly}
+        liveMonitorCount={liveMonitors.length}
+        onCreate={(count) => onChange?.(createMonitors(count))}
+      />
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <MonitorTabs
+        monitors={monitors}
+        liveMonitors={liveMonitors}
+        active={safeTab}
+        onSelect={setActiveTab}
+      />
+      <MonitorTabPanel
+        monitor={monitors[safeTab]!}
+        readonly={readonly}
+        layoutOptions={layoutOptions}
+        onAdd={() => onChange?.(addWorkspace(monitors, safeTab))}
+        onRemove={(wi) => onChange?.(removeWorkspace(monitors, safeTab, wi))}
+        onPatch={(wi, field, v) =>
+          onChange?.(updateWorkspaceField(monitors, safeTab, wi, field, v))
+        }
+      />
+    </div>
+  );
+}
+
+function EmptyMonitorsState({
+  readonly,
+  liveMonitorCount,
+  onCreate,
+}: {
+  readonly: boolean;
+  liveMonitorCount: number;
+  onCreate: (count: number) => void;
+}) {
+  const count = Math.max(1, liveMonitorCount);
+  return (
+    <div className="rounded-md border border-dashed border-border bg-secondary/20 p-4 space-y-2">
+      <p className="text-sm">
+        You're using Komorebi's anonymous default workspaces. To name
+        workspaces or pin per-workspace layouts, switch to an explicit
+        per-monitor configuration.
+      </p>
+      <button
+        type="button"
+        disabled={readonly}
+        onClick={() => onCreate(count)}
+        className={cn(
+          "inline-flex items-center gap-1.5 rounded-md border border-border",
+          "bg-secondary hover:bg-secondary/80 px-3 py-1.5 text-xs font-medium",
+          "transition-colors disabled:cursor-not-allowed disabled:opacity-50",
+        )}
+      >
+        <Plus className="h-3.5 w-3.5" />
+        Create explicit monitors config ({count} monitor
+        {count === 1 ? "" : "s"})
+      </button>
+    </div>
+  );
+}
+
+function MonitorTabs({
+  monitors,
+  liveMonitors,
+  active,
+  onSelect,
+}: {
+  monitors: RawMonitor[];
+  liveMonitors: MonitorOption[];
+  active: number;
+  onSelect: (idx: number) => void;
+}) {
+  return (
+    <div className="flex flex-wrap gap-1 border-b border-border" role="tablist">
+      {monitors.map((_, i) => {
+        const live = liveMonitors.find((m) => m.index === i);
+        const label = live ? monitorLabel(live) : `Monitor ${i}`;
+        const isActive = i === active;
+        return (
+          <button
+            key={i}
+            type="button"
+            role="tab"
+            aria-selected={isActive}
+            onClick={() => onSelect(i)}
+            className={cn(
+              "rounded-t-md px-3 py-1.5 text-xs font-medium transition-colors -mb-px border-b-2",
+              isActive
+                ? "border-primary text-foreground"
+                : "border-transparent text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function MonitorTabPanel({
+  monitor,
+  readonly,
+  layoutOptions,
+  onAdd,
+  onRemove,
+  onPatch,
+}: {
+  monitor: RawMonitor;
+  readonly: boolean;
+  layoutOptions: string[];
+  onAdd: () => void;
+  onRemove: (workspaceIdx: number) => void;
+  onPatch: (workspaceIdx: number, field: string, value: unknown) => void;
+}) {
+  const workspaces = parseWorkspaces(monitor);
+  return (
+    <div className="space-y-2">
+      {workspaces.length === 0 ? (
+        <p className="text-xs italic text-muted-foreground">
+          No workspaces yet — add one below.
+        </p>
+      ) : (
+        <ul className="space-y-1.5">
+          {workspaces.map((w, i) => (
+            <WorkspaceRow
+              key={i}
+              workspace={w}
+              readonly={readonly}
+              layoutOptions={layoutOptions}
+              onNameChange={(name) => onPatch(i, "name", name)}
+              onLayoutChange={(layout) => onPatch(i, "layout", layout)}
+              onRemove={() => onRemove(i)}
+            />
+          ))}
+        </ul>
+      )}
+      <button
+        type="button"
+        disabled={readonly}
+        onClick={onAdd}
+        className={cn(
+          "inline-flex items-center gap-1.5 rounded-md border border-border",
+          "bg-secondary hover:bg-secondary/80 px-2.5 py-1 text-xs",
+          "transition-colors disabled:cursor-not-allowed disabled:opacity-50",
+        )}
+      >
+        <Plus className="h-3 w-3" />
+        Add workspace
+      </button>
+    </div>
+  );
+}
+
+function WorkspaceRow({
+  workspace,
+  readonly,
+  layoutOptions,
+  onNameChange,
+  onLayoutChange,
+  onRemove,
+}: {
+  workspace: Record<string, unknown>;
+  readonly: boolean;
+  layoutOptions: string[];
+  onNameChange: (name: string) => void;
+  onLayoutChange: (layout: string) => void;
+  onRemove: () => void;
+}) {
+  const name = typeof workspace.name === "string" ? workspace.name : "";
+  const layout =
+    typeof workspace.layout === "string" ? workspace.layout : "BSP";
+  const choices = layoutOptions.includes(layout)
+    ? layoutOptions
+    : [layout, ...layoutOptions];
+  return (
+    <li className="grid grid-cols-[1fr_10rem_auto] gap-2 items-center">
+      <input
+        type="text"
+        className={baseInput}
+        value={name}
+        placeholder="Workspace name"
+        disabled={readonly}
+        onChange={(e) => onNameChange(e.target.value)}
+      />
+      <select
+        className={baseInput}
+        value={layout}
+        disabled={readonly}
+        onChange={(e) => onLayoutChange(e.target.value)}
+      >
+        {choices.map((c) => (
+          <option key={c} value={c}>
+            {c}
+          </option>
+        ))}
+      </select>
+      <button
+        type="button"
+        disabled={readonly}
+        onClick={onRemove}
+        title="Delete this workspace"
+        className={cn(
+          "inline-flex items-center justify-center rounded-md border border-border",
+          "bg-secondary hover:bg-destructive/20 hover:border-destructive/40",
+          "hover:text-destructive p-1.5 transition-colors",
+          "disabled:cursor-not-allowed disabled:opacity-50",
+        )}
+      >
+        <Trash2 className="h-3.5 w-3.5" />
+      </button>
+    </li>
+  );
 }
 
 export function UnknownWidget({ value }: { value: unknown }) {
