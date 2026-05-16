@@ -154,6 +154,36 @@ pub fn write_static_config_merged(
     touched_fields: &HashSet<String>,
     backups_root: &Path,
 ) -> Result<()> {
+    write_config_merged(path, edits, touched_fields, ConfigKind::Static, backups_root)
+}
+
+/// Merged save for the **bar configuration** (issue #56). Same shape as
+/// [`write_static_config_merged`] but using the bar's path + backup
+/// directory — i.e. preserves every top-level field the editor didn't
+/// touch (widgets, theme, fonts, transparency, etc.), so the bar
+/// editor can never strip `komorebi-bar.exe`'s required fields just by
+/// changing the monitor block.
+pub fn write_bar_config_merged(
+    path: &Path,
+    edits: &Value,
+    touched_fields: &HashSet<String>,
+    backups_root: &Path,
+) -> Result<()> {
+    write_config_merged(path, edits, touched_fields, ConfigKind::Bar, backups_root)
+}
+
+/// Shared merge core: read on-disk file (tolerant of comments), apply
+/// only the entries in `touched_fields` from `edits`, write back via
+/// the standard backup-aware `write`. The same logic backs both
+/// [`write_static_config_merged`] and [`write_bar_config_merged`];
+/// path + kind decide which file + backup dir get touched.
+fn write_config_merged(
+    path: &Path,
+    edits: &Value,
+    touched_fields: &HashSet<String>,
+    kind: ConfigKind,
+    backups_root: &Path,
+) -> Result<()> {
     let edits_obj = edits
         .as_object()
         .ok_or_else(|| anyhow!("edits must be a JSON object, got {edits:?}"))?;
@@ -161,7 +191,7 @@ pub fn write_static_config_merged(
     let existing_raw = if path.exists() {
         // Use the tolerant reader so a hand-edited config with comments
         // doesn't lose round-trip on the merge step.
-        read_with_kind(path, Some(ConfigKind::Static))?
+        read_with_kind(path, Some(kind))?
     } else {
         String::new()
     };
@@ -192,7 +222,7 @@ pub fn write_static_config_merged(
     }
 
     let canonical = serde_json::to_string_pretty(&merged)?;
-    write(path, &canonical, ConfigKind::Static, backups_root)
+    write(path, &canonical, kind, backups_root)
 }
 
 /// Return the top-level keys in `content` (a JSON Static-config blob)
@@ -541,6 +571,71 @@ mod tests {
             .expect("post-merge file must be canonical JSON");
         assert_eq!(parsed["border"], false);
         assert_eq!(parsed["invented_unknown"], "alive");
+    }
+
+    // ---- Issue #56: bar editor merged-save -----------------------------
+
+    #[test]
+    fn write_bar_merged_preserves_widgets_when_only_monitor_touched() {
+        // Repro for #56: bar editor saved only `monitor` and wiped the
+        // rest of the config, leaving komorebi-bar unstartable.
+        let dir = tempdir().unwrap();
+        let backups = tempdir().unwrap();
+        let path = dir.path().join("komorebi.bar.json");
+
+        // On-disk: realistic bar config with widgets, theme, and the
+        // monitor block the user is about to edit.
+        let existing = serde_json::json!({
+          "$schema": "https://example.com/schema.bar.json",
+          "left_widgets": [
+            { "Komorebi": { "workspaces": { "enable": true } } }
+          ],
+          "right_widgets": [
+            { "Date": { "enable": true, "format": "DayDateMonthYear" } }
+          ],
+          "theme": { "palette": "Base16", "name": "Ashes", "accent": "Base0D" },
+          "font_size": 12,
+          "transparency_alpha": 100,
+          "monitor": {
+            "index": 0,
+            "work_area_offset": { "left": 0, "top": 32, "right": 0, "bottom": 32 }
+          }
+        });
+        write(
+            &path,
+            &serde_json::to_string_pretty(&existing).unwrap(),
+            ConfigKind::Bar,
+            backups.path(),
+        )
+        .unwrap();
+
+        // Editor touches *only* `monitor` (the only structured widget
+        // the bar editor exposes today): index 0 → 1, padding 32 → 50.
+        let edits = serde_json::json!({
+            "monitor": {
+                "index": 1,
+                "work_area_offset": { "left": 0, "top": 50, "right": 0, "bottom": 50 }
+            }
+        });
+        let touched: HashSet<String> = ["monitor".to_string()].into_iter().collect();
+
+        write_bar_config_merged(&path, &edits, &touched, backups.path()).unwrap();
+
+        let after: Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+
+        // The touched field must be updated.
+        assert_eq!(after["monitor"]["index"], 1);
+        assert_eq!(after["monitor"]["work_area_offset"]["top"], 50);
+
+        // Every other top-level field must survive verbatim — this is
+        // the assertion the pre-fix code fails.
+        assert_eq!(after["$schema"], "https://example.com/schema.bar.json");
+        assert!(after["left_widgets"].is_array());
+        assert!(after["right_widgets"].is_array());
+        assert_eq!(after["font_size"], 12);
+        assert_eq!(after["transparency_alpha"], 100);
+        assert_eq!(after["theme"]["palette"], "Base16");
     }
 
     #[test]

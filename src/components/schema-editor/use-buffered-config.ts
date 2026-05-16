@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { writeBarConfigMerged } from "@/api/bar";
 import {
   getConfig,
   writeConfig,
@@ -47,6 +48,13 @@ export function useBufferedConfig({
   const [appliedAt, setAppliedAt] = useState<number | null>(null);
   const writeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const baselineRef = useRef<string | null>(null);
+  /**
+   * Top-level field keys the user has touched since the last apply.
+   * Routed to the merged-save endpoint (issue #56) so the bar editor
+   * can't strip `komorebi-bar.exe`'s required fields just by editing
+   * one structured widget. Reset on successful Apply.
+   */
+  const touchedFieldsRef = useRef<Set<string>>(new Set());
 
   // Mount-time load.
   useEffect(() => {
@@ -87,6 +95,11 @@ export function useBufferedConfig({
    *  NOT call applyFn (Apply is the user's explicit button click). */
   const setField = useCallback(
     (key: string, next: unknown) => {
+      // Track which top-level keys the editor has touched. The merged
+      // save endpoint preserves every untouched key on disk verbatim,
+      // so the editor can't strip required fields it doesn't render.
+      touchedFieldsRef.current.add(key);
+
       setValue((prev) => {
         const merged = { ...(prev ?? {}), [key]: next };
         const serialised = JSON.stringify(merged, null, 2);
@@ -95,7 +108,7 @@ export function useBufferedConfig({
         if (writeTimer.current !== null) clearTimeout(writeTimer.current);
         writeTimer.current = setTimeout(async () => {
           try {
-            await writeConfig(kind, serialised);
+            await persist(kind, merged, touchedFieldsRef.current);
             setContent(serialised);
           } catch {
             // Soft-fail; the buffer is still in memory. The next
@@ -119,7 +132,7 @@ export function useBufferedConfig({
       writeTimer.current = null;
       if (value !== null) {
         try {
-          await writeConfig(kind, JSON.stringify(value, null, 2));
+          await persist(kind, value, touchedFieldsRef.current);
         } catch {
           // best-effort
         }
@@ -130,6 +143,9 @@ export function useBufferedConfig({
       await applyFn();
       baselineRef.current = JSON.stringify(value, null, 2);
       setPendingCount(0);
+      // The daemon now reflects the on-disk file; the next edit starts
+      // a fresh touched-fields list.
+      touchedFieldsRef.current = new Set();
       setAppliedAt(Date.now());
     } finally {
       setApplying(false);
@@ -162,4 +178,25 @@ export function useBufferedConfig({
     /** Caller-driven Apply (restart daemon). */
     apply,
   };
+}
+
+/**
+ * Route the write through the kind's merged-save endpoint when one
+ * exists (bar — issue #56). For other kinds, fall back to the legacy
+ * full-overwrite `writeConfig`. The merged path is what prevents
+ * editor-driven field stripping.
+ */
+async function persist(
+  kind: ConfigKind,
+  value: Record<string, unknown>,
+  touchedFields: Set<string>,
+): Promise<void> {
+  if (kind === "bar") {
+    await writeBarConfigMerged(value, Array.from(touchedFields));
+    return;
+  }
+  // Legacy path for any future buffered kind that hasn't been migrated
+  // to merged-save. Currently nothing routes through here — whkdrc uses
+  // its own structured-model hook.
+  await writeConfig(kind, JSON.stringify(value, null, 2));
 }
