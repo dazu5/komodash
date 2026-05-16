@@ -25,6 +25,8 @@ export type WidgetKey =
    *  arrays (issue #64). Tabs per monitor, per-workspace name + layout
    *  dropdown + delete. Live-applies through the Static pipeline. */
   | "workspaces"
+  /** Six per-state colour pickers for `border_colours` (issue #75). */
+  | "border-colours"
   | "unknown";
 
 const KNOWN_WIDGETS: ReadonlySet<WidgetKey> = new Set([
@@ -37,6 +39,7 @@ const KNOWN_WIDGETS: ReadonlySet<WidgetKey> = new Set([
   "json",
   "monitor-placement",
   "workspaces",
+  "border-colours",
   "unknown",
 ]);
 

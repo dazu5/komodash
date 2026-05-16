@@ -14,6 +14,7 @@ import { pickWidget, type WidgetKey } from "./widget-picker";
 import {
   ArrayPreview,
   BooleanWidget,
+  BorderColoursWidget,
   EnumWidget,
   JsonValueWidget,
   MonitorPlacementWidget,
@@ -285,6 +286,15 @@ function FieldWidget({
         <MonitorPlacementWidget
           value={value}
           readonly={false}
+          onChange={onChange}
+        />
+      );
+    case "border-colours":
+      // 6 colour pickers, one per BorderColourState (#75).
+      return (
+        <BorderColoursWidget
+          value={value}
+          readonly={readonly}
           onChange={onChange}
         />
       );
