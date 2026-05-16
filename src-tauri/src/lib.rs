@@ -778,6 +778,40 @@ fn stringify_err<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
 }
 
+// ---- Issue #25: Visible windows --------------------------------------------
+
+/// Run `komorebic visible-windows` and return the raw JSON string.
+/// The frontend parses the monitor-keyed shape via
+/// `src/lib/visible-windows.ts`.
+///
+/// Returns an error if komorebic is missing or the command fails;
+/// returns the stdout verbatim otherwise (the JSON parser on the
+/// frontend handles malformed output by falling back to `[]`).
+#[tauri::command]
+async fn get_visible_windows(
+    state: tauri::State<'_, AppState>,
+) -> Result<String, String> {
+    let client = state.komorebic.clone();
+    tokio::task::spawn_blocking(move || {
+        let info = client
+            .discover()
+            .ok_or_else(|| anyhow::anyhow!("komorebic.exe could not be located"))?;
+        let output = std::process::Command::new(&info.path)
+            .arg("visible-windows")
+            .output()?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "komorebic visible-windows failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        Ok::<String, anyhow::Error>(String::from_utf8_lossy(&output.stdout).into_owned())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}
+
 // ---- Issue #23: First-run wizard -------------------------------------------
 
 /// The four detection signals the first-run wizard FSM consumes. All
@@ -1036,6 +1070,7 @@ pub fn run() {
             write_starter_config,
             enable_autostart,
             disable_autostart,
+            get_visible_windows,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
