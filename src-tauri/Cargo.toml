@@ -1,6 +1,6 @@
 [package]
 name = "komodash"
-version = "0.1.1"
+version = "0.1.2"
 description = "A dashboard for customizing the Komorebi tiling window manager"
 authors = ["dazu5 <johnmarkdaz4@gmail.com>"]
 edition = "2021"

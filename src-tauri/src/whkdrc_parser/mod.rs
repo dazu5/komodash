@@ -25,10 +25,14 @@ use serde::{Deserialize, Serialize};
 pub const CANONICAL_HEADER: &str =
     "# Managed by Komodash — manual edits will be overwritten.";
 
-/// The shell directive Komodash always emits. Per ADR-0003 Komodash owns
-/// the file format and standardises on `pwsh` regardless of what was
-/// previously on disk.
-pub const CANONICAL_SHELL: &str = "pwsh";
+/// The shell directive Komodash always emits. Per ADR-0003 Komodash
+/// owns the file format. We default to `powershell` (Windows
+/// PowerShell 5.1) which ships on every Windows install, rather than
+/// `pwsh` (PowerShell 7+, separately installable) — see issue #67 for
+/// the bug where users without pwsh got silent hotkey failures.
+/// Power users can override this in the Hotkey editor when we ship
+/// shell-directive editing.
+pub const CANONICAL_SHELL: &str = "powershell";
 
 /// A keyboard modifier in a [`Chord`]. Listed in Komodash's canonical
 /// order: `Win`, `Ctrl`, `Alt`, `Shift`.
@@ -381,21 +385,23 @@ mod tests {
     }
 
     #[test]
-    fn serializer_always_emits_pwsh_shell() {
-        // Even when the parsed model claims `powershell`, we emit `pwsh`.
+    fn serializer_always_emits_canonical_shell() {
+        // Even when the parsed model claims `pwsh`, we emit the
+        // canonical shell directive (`powershell` per #67 — broadest
+        // Windows compatibility; `pwsh` is opt-in for PS7+ users).
         let model = WhkdrcModel {
-            shell: Some("powershell".to_string()),
+            shell: Some("pwsh".to_string()),
             imports: vec![],
             bindings: vec![],
             preserved_lines: vec![],
         };
         let out = serialize(&model);
         assert!(
-            out.contains(".shell pwsh"),
-            "serializer must always emit `.shell pwsh`, got:\n{out}"
+            out.contains(&format!(".shell {CANONICAL_SHELL}")),
+            "serializer must always emit `.shell {CANONICAL_SHELL}`, got:\n{out}"
         );
         assert!(
-            !out.contains(".shell powershell"),
+            !out.contains(".shell pwsh"),
             "serializer must NOT round-trip the parsed shell value, got:\n{out}"
         );
     }
