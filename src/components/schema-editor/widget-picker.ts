@@ -29,6 +29,8 @@ export type WidgetKey =
   | "border-colours"
   /** Animation enabled/duration/style/fps row (issue #76). */
   | "animation"
+  /** Theme palette + variant picker (issue #77). */
+  | "theme"
   | "unknown";
 
 const KNOWN_WIDGETS: ReadonlySet<WidgetKey> = new Set([
@@ -43,6 +45,7 @@ const KNOWN_WIDGETS: ReadonlySet<WidgetKey> = new Set([
   "workspaces",
   "border-colours",
   "animation",
+  "theme",
   "unknown",
 ]);
 
