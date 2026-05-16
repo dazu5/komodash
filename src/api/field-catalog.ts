@@ -16,6 +16,11 @@ export interface FieldOverlay {
   section: string;
   /** Renderer hint — see widget keys in `components/schema-editor`. */
   widget?: string | null;
+  /** When `true`, the SchemaEditor drops this field entirely (issue
+   *  #78). Used for upstream-deprecated fields and arrays that have
+   *  a dedicated editor elsewhere (e.g. App Rules) so the user can't
+   *  corrupt parallel surfaces by hand-editing the JSON. */
+  hidden?: boolean;
 }
 
 /** The bundled Field catalog overlay. */
