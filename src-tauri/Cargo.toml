@@ -46,7 +46,7 @@ tempfile = "3"
 # Windows-only: named-pipe client for komorebi subscribe-pipe
 [target.'cfg(windows)'.dependencies]
 tokio = { version = "1", features = ["net"] }
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Pipes", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Pipes", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
 
 [profile.release]
 panic = "abort"

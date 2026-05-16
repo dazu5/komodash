@@ -24,6 +24,7 @@ pub mod komorebic;
 pub mod live_state;
 pub mod managed_config;
 pub mod schema_cache;
+pub mod starter_config;
 pub mod updates;
 pub mod whkdrc_parser;
 
@@ -963,7 +964,15 @@ fn write_starter_config(state: tauri::State<'_, AppState>) -> Result<(), String>
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(stringify_err)?;
     }
-    std::fs::write(&path, STARTER_CONFIG).map_err(stringify_err)?;
+    // Inject `monitors[].workspaces[]` sized to the user's displays
+    // (issue #69) so the bar shows N pips from boot instead of waiting
+    // for the user to discover Alt+1..N. Falls back to the unmodified
+    // starter if monitor detection or injection fails — a malformed
+    // starter is a far worse failure mode than an empty bar.
+    let monitor_count = starter_config::detect_monitor_count();
+    let body = starter_config::inject_workspaces(STARTER_CONFIG, monitor_count)
+        .unwrap_or_else(|_| STARTER_CONFIG.to_string());
+    std::fs::write(&path, body).map_err(stringify_err)?;
     Ok(())
 }
 
