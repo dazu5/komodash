@@ -27,6 +27,8 @@ export type WidgetKey =
   | "workspaces"
   /** Six per-state colour pickers for `border_colours` (issue #75). */
   | "border-colours"
+  /** Animation enabled/duration/style/fps row (issue #76). */
+  | "animation"
   | "unknown";
 
 const KNOWN_WIDGETS: ReadonlySet<WidgetKey> = new Set([
@@ -40,6 +42,7 @@ const KNOWN_WIDGETS: ReadonlySet<WidgetKey> = new Set([
   "monitor-placement",
   "workspaces",
   "border-colours",
+  "animation",
   "unknown",
 ]);
 

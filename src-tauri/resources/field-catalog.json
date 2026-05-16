@@ -43,7 +43,7 @@
       "label": "Animation settings",
       "description": "Whether windows animate when moved or resized, and how fast.",
       "section": "animations",
-      "widget": "object"
+      "widget": "animation"
     },
     "default_workspace_padding": {
       "label": "Workspace padding (px)",
