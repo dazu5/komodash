@@ -19,6 +19,7 @@ import AboutPage from "@/pages/About";
 import { FirstRunWizard } from "@/pages/FirstRunWizard";
 import { detectFirstRunState } from "@/api/first-run";
 import { nextState, type WizardState } from "@/lib/first-run-fsm";
+import { useUndoStack } from "@/stores/undo-stack";
 import { UpdateBanner } from "@/components/update-banner";
 
 type NavItem = {
@@ -38,6 +39,7 @@ const NAV: NavItem[] = [
 
 export default function App() {
   const wizard = useFirstRunGate();
+  useGlobalUndoHotkey();
 
   // Wait for the initial detection to land before rendering anything —
   // avoids flashing the main UI then yanking it away when the wizard
@@ -137,4 +139,32 @@ function useFirstRunGate():
   if (status === "loading") return "loading";
   if (status === "show") return { show: true, onComplete };
   return { show: false };
+}
+
+/**
+ * Global Ctrl+Z hotkey for the undo stack (issue #21). Bound at the
+ * shell level so every editor sees it. Ignored when the user is
+ * typing in an input/textarea/contenteditable element so per-field
+ * native undo (e.g. text input rollback) still works as expected.
+ *
+ * Ctrl+Y / Ctrl+Shift+Z (redo) is out of scope for v1 per the issue.
+ */
+function useGlobalUndoHotkey() {
+  const undo = useUndoStack((s) => s.undo);
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === "z")) return;
+      const target = e.target as HTMLElement | null;
+      if (target) {
+        const tag = target.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA" || target.isContentEditable) {
+          return;
+        }
+      }
+      e.preventDefault();
+      void undo();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [undo]);
 }

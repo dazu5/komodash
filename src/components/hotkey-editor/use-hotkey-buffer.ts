@@ -8,6 +8,7 @@ import {
   type Binding,
   type WhkdrcModel,
 } from "@/api/hotkeys";
+import { useUndoStack } from "@/stores/undo-stack";
 
 /**
  * Working-buffer hook for the Hotkeys editor (issue #20, per ADR-0006
@@ -133,13 +134,30 @@ export function useHotkeyBuffer() {
     [model, replace],
   );
 
-  /** Mark the buffer as the new baseline (called after a successful Apply). */
+  const pushUndo = useUndoStack((s) => s.apply);
+
+  /** Mark the buffer as the new baseline (called after a successful Apply).
+   *  Also pushes the BEFORE→AFTER pair onto the global undo stack so
+   *  Ctrl+Z reverts whkd to the previous applied state (issue #21). */
   const markApplied = useCallback(() => {
-    if (model) {
-      baselineRef.current = JSON.stringify(model);
-      setPendingCount(0);
+    if (!model) return;
+    const beforeRaw = baselineRef.current;
+    let beforeModel: WhkdrcModel | null = null;
+    try {
+      beforeModel = beforeRaw ? (JSON.parse(beforeRaw) as WhkdrcModel) : null;
+    } catch {
+      beforeModel = null;
     }
-  }, [model]);
+    baselineRef.current = JSON.stringify(model);
+    setPendingCount(0);
+    if (beforeModel) {
+      void pushUndo({
+        kind: "whkdrc-apply",
+        before: beforeModel,
+        after: model,
+      });
+    }
+  }, [model, pushUndo]);
 
   // Derived: any error-kind issue → Apply is disabled.
   const hasErrors = issues.some(

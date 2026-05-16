@@ -6,6 +6,7 @@ import {
   writeConfig,
   type ConfigKind,
 } from "@/api/config";
+import { useUndoStack } from "@/stores/undo-stack";
 
 /**
  * Buffered editor state for a Managed config that does NOT live-apply
@@ -125,7 +126,19 @@ export function useBufferedConfig({
   /** Caller-driven apply: flush any pending write, then call the
    *  daemon-restart thunk. Updates baseline on success so the pending
    *  counter resets. */
+  const pushUndo = useUndoStack((s) => s.apply);
+
   const apply = useCallback(async () => {
+    // Capture the BEFORE snapshot for the undo stack — the baseline
+    // is what the daemon currently has on disk + in memory.
+    const beforeRaw = baselineRef.current;
+    let beforeParsed: unknown = null;
+    try {
+      beforeParsed = beforeRaw ? JSON.parse(beforeRaw) : null;
+    } catch {
+      beforeParsed = null;
+    }
+
     // Flush any pending debounced write first.
     if (writeTimer.current !== null) {
       clearTimeout(writeTimer.current);
@@ -143,14 +156,28 @@ export function useBufferedConfig({
       await applyFn();
       baselineRef.current = JSON.stringify(value, null, 2);
       setPendingCount(0);
-      // The daemon now reflects the on-disk file; the next edit starts
-      // a fresh touched-fields list.
       touchedFieldsRef.current = new Set();
       setAppliedAt(Date.now());
+
+      // Successful apply — push to the undo stack. The handler
+      // mapped per kind in `useUndoStack` will write the BEFORE
+      // snapshot back through the merged endpoint and restart the
+      // daemon when the user hits Ctrl+Z.
+      if (beforeParsed !== null && value !== null) {
+        const undoKind =
+          kind === "bar" ? "bar-apply" : kind === "whkdrc" ? "whkdrc-apply" : null;
+        if (undoKind) {
+          void pushUndo({
+            kind: undoKind,
+            before: beforeParsed,
+            after: value,
+          });
+        }
+      }
     } finally {
       setApplying(false);
     }
-  }, [applyFn, kind, value]);
+  }, [applyFn, kind, value, pushUndo]);
 
   return {
     /** Raw content from disk (kept in sync after each settled write). */
