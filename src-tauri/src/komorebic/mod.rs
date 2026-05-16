@@ -519,14 +519,41 @@ impl Komorebic for WinKomorebic {
     }
 
     fn start(&self, with_whkd: bool, with_bar: bool) -> Result<()> {
-        let mut args: Vec<&str> = vec!["start"];
+        // Start the Komorebi daemon itself first. We deliberately don't
+        // pass --whkd or --bar: per issue #66, `komorebic start --whkd`
+        // only PRINTS a PowerShell snippet to start whkd, it doesn't
+        // actually spawn the process. We need to spawn whkd ourselves.
+        self.run_subcommand(&["start"])?;
+
         if with_whkd {
-            args.push("--whkd");
+            // whkd is on PATH for the standard install
+            // (C:\Program Files\whkd\bin\whkd.exe). Spawn it directly
+            // via silent_command so it doesn't flash a console window.
+            // Best-effort: a missing whkd is logged but doesn't fail
+            // the start — Komorebi itself is up.
+            match which::which("whkd.exe") {
+                Ok(path) => {
+                    if let Err(e) = silent_command(&path).spawn() {
+                        tracing::warn!("failed to spawn whkd.exe: {e}");
+                    } else {
+                        tracing::info!("spawned whkd.exe from {}", path.display());
+                    }
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        "whkd.exe not found on PATH; hotkeys will not work until you install whkd"
+                    );
+                }
+            }
         }
+
         if with_bar {
-            args.push("--bar");
+            // Same deal — komorebic start --bar is unreliable. Use the
+            // existing restart_bar machinery which spawns bar.exe
+            // directly via Win32 + sysinfo.
+            let _ = self.restart_bar();
         }
-        self.run_subcommand(&args)
+        Ok(())
     }
 
     fn stop(&self) -> Result<()> {
@@ -558,24 +585,20 @@ impl Komorebic for WinKomorebic {
     }
 
     fn restart_whkd(&self) -> Result<()> {
-        // Issue #52: prior to refactor this used `taskkill /F /IM
-        // whkd.exe`, which on at least one Windows 11 host hangs 60+ s
-        // and fails to actually kill the process. Now routed through
-        // the shared `restart_named_process` helper that uses Win32
-        // `TerminateProcess` directly. The spawn closure below is
-        // unchanged: `komorebic start --whkd` re-registers hotkeys
-        // and is idempotent w.r.t. an already-running Komorebi.
+        // Issues #52 and #66: kill via Win32 TerminateProcess
+        // (taskkill hangs on some hosts), respawn whkd.exe directly
+        // (`komorebic start --whkd` only PRINTS a PS snippet, doesn't
+        // actually spawn the process). whkd needs to be on PATH —
+        // standard install puts it at C:\Program Files\whkd\bin\.
         restart_named_process(&WinProcessOps, "whkd.exe", || {
-            let path = self
-                .locate()
-                .ok_or_else(|| anyhow::anyhow!("komorebic.exe could not be located"))?;
-            let output = silent_command(&path).args(["start", "--whkd"]).output()?;
-            if !output.status.success() {
-                anyhow::bail!(
-                    "komorebic start --whkd failed: {}",
-                    String::from_utf8_lossy(&output.stderr).trim()
-                );
-            }
+            let path = which::which("whkd.exe").map_err(|_| {
+                anyhow::anyhow!(
+                    "whkd.exe not found on PATH; install whkd to use hotkeys"
+                )
+            })?;
+            silent_command(&path)
+                .spawn()
+                .map_err(|e| anyhow::anyhow!("failed to spawn whkd.exe: {e}"))?;
             Ok(())
         })
     }
