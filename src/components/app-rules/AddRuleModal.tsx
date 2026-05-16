@@ -1,7 +1,7 @@
 import * as Dialog from "@radix-ui/react-dialog";
 import * as Tabs from "@radix-ui/react-tabs";
 import { useCallback, useEffect, useState } from "react";
-import { Download, Search, X } from "lucide-react";
+import { AppWindow, Download, RefreshCw, Search, X } from "lucide-react";
 import { toast } from "sonner";
 
 import type { AppRule, IdentifierKind, RuleKind } from "@/lib/app-rules";
@@ -12,9 +12,14 @@ import {
   type CommunityCatalogEntry,
 } from "@/lib/community-catalog";
 import {
+  filterWindows,
+  type VisibleWindow,
+} from "@/lib/visible-windows";
+import {
   fetchCommunityCatalog,
   readCommunityCatalog,
 } from "@/api/community-catalog";
+import { getVisibleWindows } from "@/api/visible-windows";
 import { cn } from "@/lib/utils";
 
 const RULE_KINDS: { value: RuleKind; label: string }[] = [
@@ -75,6 +80,7 @@ export function AddRuleModal({
             <Tabs.List className="inline-flex items-center gap-1 rounded-md border border-border p-1 mb-4">
               <TabTrigger value="manual">Manual entry</TabTrigger>
               <TabTrigger value="community">Search community library</TabTrigger>
+              <TabTrigger value="visible">From running apps</TabTrigger>
             </Tabs.List>
 
             <Tabs.Content value="manual" className="focus:outline-none">
@@ -91,6 +97,16 @@ export function AddRuleModal({
               <CommunityRuleSearch
                 onImport={(rules) => {
                   onImport(rules);
+                  onOpenChange(false);
+                }}
+                onCancel={() => onOpenChange(false)}
+              />
+            </Tabs.Content>
+
+            <Tabs.Content value="visible" className="focus:outline-none">
+              <VisibleWindowsPicker
+                onSave={(rule) => {
+                  onSave(rule);
                   onOpenChange(false);
                 }}
                 onCancel={() => onOpenChange(false)}
@@ -427,6 +443,173 @@ function summarize(rules: AppRule[]): string {
   return Object.entries(counts)
     .map(([k, n]) => `${n} ${k}`)
     .join(", ");
+}
+
+// ---- Visible-windows tab --------------------------------------------------
+
+const VISIBLE_KIND_BUTTONS: { kind: RuleKind; label: string; tint: string }[] = [
+  { kind: "ignore", label: "Ignore", tint: "bg-red-500/15 border-red-500/30 hover:bg-red-500/30" },
+  { kind: "float", label: "Float", tint: "bg-blue-500/15 border-blue-500/30 hover:bg-blue-500/30" },
+  { kind: "manage", label: "Manage", tint: "bg-emerald-500/15 border-emerald-500/30 hover:bg-emerald-500/30" },
+];
+
+function VisibleWindowsPicker({
+  onSave,
+  onCancel,
+}: {
+  onSave: (rule: AppRule) => void;
+  onCancel: () => void;
+}) {
+  const [windows, setWindows] = useState<VisibleWindow[] | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [query, setQuery] = useState("");
+
+  const load = useCallback(async () => {
+    setRefreshing(true);
+    setLoadError(null);
+    try {
+      const list = await getVisibleWindows();
+      setWindows(list);
+    } catch (e) {
+      setWindows([]);
+      setLoadError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRefreshing(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  if (windows === null) {
+    return <LoadingPanel label="Listing running windows…" />;
+  }
+
+  const filtered = filterWindows(windows, query);
+
+  return (
+    <div className="space-y-3">
+      <div className="relative">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+        <input
+          type="text"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder={`Search ${windows.length} windows…`}
+          className={cn(inputClass, "pl-9")}
+          autoFocus
+        />
+      </div>
+
+      <div className="flex items-center justify-between">
+        <div className="text-xs text-muted-foreground">
+          {filtered.length} of {windows.length} windows
+        </div>
+        <button
+          type="button"
+          onClick={() => void load()}
+          disabled={refreshing}
+          className={cn(
+            "inline-flex items-center gap-1 text-xs text-muted-foreground",
+            "hover:text-foreground transition-colors",
+            "disabled:cursor-not-allowed disabled:opacity-50",
+          )}
+        >
+          <RefreshCw
+            className={cn("h-3 w-3", refreshing && "animate-spin")}
+          />
+          Refresh
+        </button>
+      </div>
+
+      {loadError && (
+        <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          {loadError}
+        </div>
+      )}
+
+      <ul className="max-h-80 overflow-y-auto space-y-1 border border-border rounded-md p-1">
+        {filtered.length === 0 ? (
+          <li className="p-4 text-center text-sm text-muted-foreground">
+            {windows.length === 0
+              ? "No visible windows. Is Komorebi running?"
+              : `No windows match "${query}".`}
+          </li>
+        ) : (
+          filtered.slice(0, 100).map((w) => (
+            <VisibleWindowRow
+              key={`${w.exe}|${w.class}|${w.title}`}
+              window={w}
+              onPick={(kind) => {
+                onSave({
+                  kind,
+                  identifierKind: "Exe",
+                  id: w.exe,
+                  matchingStrategy: "Equals",
+                });
+                toast.success(`Added ${kind} rule for ${w.exe}`);
+              }}
+            />
+          ))
+        )}
+      </ul>
+
+      <div className="flex items-center justify-end gap-2 pt-2">
+        <button
+          type="button"
+          onClick={onCancel}
+          className={cn(
+            "rounded-md border border-border px-3 py-1.5 text-sm",
+            "bg-secondary hover:bg-secondary/80 transition-colors",
+          )}
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function VisibleWindowRow({
+  window,
+  onPick,
+}: {
+  window: VisibleWindow;
+  onPick: (kind: RuleKind) => void;
+}) {
+  return (
+    <li className="flex items-center justify-between gap-3 px-3 py-2 rounded-md hover:bg-secondary/50">
+      <div className="flex items-center gap-2 min-w-0">
+        <AppWindow className="h-4 w-4 text-muted-foreground shrink-0" />
+        <div className="min-w-0">
+          <div className="text-sm truncate" title={window.title}>
+            {window.title || "(no title)"}
+          </div>
+          <div className="text-xs text-muted-foreground truncate" title={window.exe}>
+            {window.exe}
+          </div>
+        </div>
+      </div>
+      <div className="flex items-center gap-1 shrink-0">
+        {VISIBLE_KIND_BUTTONS.map(({ kind, label, tint }) => (
+          <button
+            key={kind}
+            type="button"
+            onClick={() => onPick(kind)}
+            className={cn(
+              "rounded-md border px-2 py-1 text-xs transition-colors",
+              tint,
+            )}
+            title={`Add ${label} rule for ${window.exe}`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+    </li>
+  );
 }
 
 // ---- shared bits ----------------------------------------------------------
