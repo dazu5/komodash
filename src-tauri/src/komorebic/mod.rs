@@ -276,6 +276,111 @@ fn win32_terminate_process(_pid: u32) -> bool {
     false
 }
 
+/// OS-level process operations needed by [`restart_named_process`].
+/// Production wires this to `sysinfo` + [`win32_terminate_process`];
+/// tests use a fake to assert the kill order without spawning real
+/// processes.
+trait ProcessOps {
+    fn list_pids_by_name(&self, image_name: &str) -> Vec<u32>;
+    fn terminate(&self, pid: u32) -> bool;
+}
+
+/// Restart a named process: terminate every running instance whose
+/// image name matches, wait for the OS to actually release the PIDs,
+/// then run the supplied spawn closure to start a fresh one.
+///
+/// Used by both `restart_bar` and `restart_whkd` to share the
+/// kill+spawn dance — see issue #52 for the back-story (taskkill
+/// was hanging 60+ s on at least one host, breaking the bar AND
+/// hotkey Apply paths). Tracing at every step lands in the daily
+/// `komodash-YYYY-MM-DD.log` so post-hoc debugging doesn't need
+/// instrumentation rebuilds.
+fn restart_named_process<O: ProcessOps>(
+    ops: &O,
+    image_name: &str,
+    spawn_fn: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    let t0 = std::time::Instant::now();
+    let pids = ops.list_pids_by_name(image_name);
+    tracing::info!(
+        "restart_named_process({image_name}): found {} PID(s) {:?} — enum took {:?}",
+        pids.len(),
+        pids,
+        t0.elapsed()
+    );
+
+    for pid in &pids {
+        let kt = std::time::Instant::now();
+        let killed = ops.terminate(*pid);
+        tracing::info!(
+            "restart_named_process({image_name}): terminate({pid}) -> {} in {:?}",
+            if killed { "ok" } else { "err" },
+            kt.elapsed()
+        );
+    }
+
+    // Poll for absence — `terminate` returns immediately but the OS
+    // process table can briefly still report the PID. Bounded at
+    // 500 ms so a stuck OS doesn't hang the caller indefinitely.
+    if !pids.is_empty() {
+        let poll_start = std::time::Instant::now();
+        let deadline = poll_start + std::time::Duration::from_millis(500);
+        loop {
+            if ops.list_pids_by_name(image_name).is_empty() {
+                tracing::info!(
+                    "restart_named_process({image_name}): all PIDs gone after {:?}",
+                    poll_start.elapsed()
+                );
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                tracing::warn!(
+                    "restart_named_process({image_name}): some PIDs survived 500 ms — spawning anyway"
+                );
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    let spawn_start = std::time::Instant::now();
+    let result = spawn_fn();
+    tracing::info!(
+        "restart_named_process({image_name}): spawn took {:?}, total elapsed {:?}",
+        spawn_start.elapsed(),
+        t0.elapsed()
+    );
+    result
+}
+
+/// Production [`ProcessOps`] — `sysinfo` for enumeration, the existing
+/// [`win32_terminate_process`] helper for the kill.
+#[cfg(windows)]
+struct WinProcessOps;
+
+#[cfg(windows)]
+impl ProcessOps for WinProcessOps {
+    fn list_pids_by_name(&self, image_name: &str) -> Vec<u32> {
+        use sysinfo::{ProcessRefreshKind, RefreshKind, System};
+        let sys = System::new_with_specifics(
+            RefreshKind::new().with_processes(ProcessRefreshKind::new()),
+        );
+        sys.processes()
+            .iter()
+            .filter(|(_, p)| {
+                p.name()
+                    .to_string_lossy()
+                    .eq_ignore_ascii_case(image_name)
+            })
+            .map(|(pid, _)| pid.as_u32())
+            .collect()
+    }
+
+    fn terminate(&self, pid: u32) -> bool {
+        win32_terminate_process(pid)
+    }
+}
+
 /// Production implementation.
 pub struct WinKomorebic;
 
@@ -429,28 +534,26 @@ impl Komorebic for WinKomorebic {
     }
 
     fn restart_whkd(&self) -> Result<()> {
-        // Best-effort kill of whkd.exe — failures are tolerated because
-        // whkd might already be dead. Then komorebic start --whkd
-        // respawns it; that command is idempotent w.r.t. Komorebi itself
-        // (per #15 it's safe to call on a running Komorebi).
-        let _ = Command::new("taskkill")
-            .args(["/F", "/IM", "whkd.exe"])
-            .output();
-        // Give Windows a beat to release the binding before respawn.
-        std::thread::sleep(std::time::Duration::from_millis(150));
-        let path = self
-            .locate()
-            .ok_or_else(|| anyhow::anyhow!("komorebic.exe could not be located"))?;
-        // `komorebic start --whkd` is what we use elsewhere; calling it
-        // while Komorebi is already running just relaunches whkd.
-        let output = Command::new(&path).args(["start", "--whkd"]).output()?;
-        if !output.status.success() {
-            anyhow::bail!(
-                "komorebic start --whkd failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            );
-        }
-        Ok(())
+        // Issue #52: prior to refactor this used `taskkill /F /IM
+        // whkd.exe`, which on at least one Windows 11 host hangs 60+ s
+        // and fails to actually kill the process. Now routed through
+        // the shared `restart_named_process` helper that uses Win32
+        // `TerminateProcess` directly. The spawn closure below is
+        // unchanged: `komorebic start --whkd` re-registers hotkeys
+        // and is idempotent w.r.t. an already-running Komorebi.
+        restart_named_process(&WinProcessOps, "whkd.exe", || {
+            let path = self
+                .locate()
+                .ok_or_else(|| anyhow::anyhow!("komorebic.exe could not be located"))?;
+            let output = Command::new(&path).args(["start", "--whkd"]).output()?;
+            if !output.status.success() {
+                anyhow::bail!(
+                    "komorebic start --whkd failed: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                );
+            }
+            Ok(())
+        })
     }
 
     fn bar_config_schema(&self) -> Result<String> {
@@ -473,100 +576,16 @@ impl Komorebic for WinKomorebic {
         // `komorebic start --bar`. The latter is "start komorebi.exe
         // with the bar" — when komorebi.exe is already running, it
         // hangs for ~60s waiting for the daemon to be in a freshly-
-        // started state.
-        //
-        // Killing the old bar: iterations 1 & 2 both failed.
-        //   v1 used `taskkill /F /IM` — sometimes hung, sometimes
-        //     left zombies (race on the image-name lookup).
-        //   v2 used sysinfo's `Process::kill()` — on this user's box
-        //     it appears to silently fail (returns without killing),
-        //     so the spawn-on-timeout path kicks in → ghosting.
-        //   v3 (this code): enumerate PIDs via sysinfo (reliable),
-        //     then kill each via `taskkill /F /PID <pid>` (no /IM
-        //     race; this is the same path PowerShell's Stop-Process
-        //     uses under the hood). Tracing at each step so we can
-        //     verify in production logs.
-        let t0 = std::time::Instant::now();
-        use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, RefreshKind, System};
-        let mut sys = System::new_with_specifics(
-            RefreshKind::new().with_processes(ProcessRefreshKind::new()),
-        );
-        let target_pids: Vec<u32> = sys
-            .processes()
-            .iter()
-            .filter(|(_, p)| {
-                p.name()
-                    .to_string_lossy()
-                    .eq_ignore_ascii_case("komorebi-bar.exe")
-            })
-            .map(|(pid, _)| pid.as_u32())
-            .collect();
-        tracing::info!(
-            "restart_bar: found {} bar process(es) ({:?}) — enum took {:?}",
-            target_pids.len(),
-            target_pids,
-            t0.elapsed()
-        );
-
-        // Kill each by PID via raw Win32 TerminateProcess.
-        //
-        // We tried taskkill (both /IM and /PID variants) earlier in
-        // this issue; on at least one Windows 11 host taskkill takes
-        // 60+ seconds AND fails to actually kill the process — most
-        // likely a stuck WMI/RPC path inside taskkill.exe.
-        // PowerShell's `Stop-Process -Force` works in ~30 ms on the
-        // same host because it skips taskkill and calls
-        // TerminateProcess via P/Invoke. We do the same here via the
-        // windows-sys binding so we don't even pay the powershell
-        // spawn cost.
-        for pid in &target_pids {
-            let kt = std::time::Instant::now();
-            let killed = win32_terminate_process(*pid);
-            tracing::info!(
-                "restart_bar: TerminateProcess({}) -> {} in {:?}",
-                pid,
-                if killed { "ok" } else { "err" },
-                kt.elapsed()
-            );
-        }
-
-        // Poll for absence using sysinfo with a TARGETED refresh
-        // (just our PIDs, not all processes). Cheap enough to tick
-        // every 20 ms with negligible overhead.
-        let poll_start = std::time::Instant::now();
-        let deadline = poll_start + std::time::Duration::from_millis(500);
-        let sysinfo_pids: Vec<sysinfo::Pid> =
-            target_pids.iter().map(|p| sysinfo::Pid::from_u32(*p)).collect();
-        loop {
-            sys.refresh_processes(ProcessesToUpdate::Some(&sysinfo_pids), true);
-            let still_alive = sysinfo_pids.iter().any(|p| sys.process(*p).is_some());
-            if !still_alive {
-                tracing::info!(
-                    "restart_bar: all bar PIDs gone after {:?}",
-                    poll_start.elapsed()
-                );
-                break;
-            }
-            if std::time::Instant::now() >= deadline {
-                tracing::warn!(
-                    "restart_bar: some bar PIDs survived 500 ms — spawning anyway"
-                );
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-
-        let spawn_start = std::time::Instant::now();
-        let bar_path = self.locate_bar()?;
-        Command::new(&bar_path).spawn().map_err(|e| {
-            anyhow::anyhow!("failed to launch komorebi-bar.exe: {e}")
-        })?;
-        tracing::info!(
-            "restart_bar: spawned new bar in {:?}, total elapsed {:?}",
-            spawn_start.elapsed(),
-            t0.elapsed()
-        );
-        Ok(())
+        // started state. The kill+spawn dance lives in
+        // `restart_named_process`; see issue #52 for why we route
+        // through the shared helper rather than calling taskkill.
+        restart_named_process(&WinProcessOps, "komorebi-bar.exe", || {
+            let bar_path = self.locate_bar()?;
+            Command::new(&bar_path).spawn().map_err(|e| {
+                anyhow::anyhow!("failed to launch komorebi-bar.exe: {e}")
+            })?;
+            Ok(())
+        })
     }
 
     fn monitor_work_area_offset(
@@ -849,5 +868,133 @@ mod tests {
         assert!(supported.supported);
         let unsupported = info("0.1.40");
         assert!(!unsupported.supported);
+    }
+
+    // ----- restart_named_process (issue #52) -----
+
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+
+    /// Test double for [`ProcessOps`]. Records every PID handed to
+    /// `terminate` so tests can assert the kill order.
+    struct FakeOps {
+        pids_by_name: HashMap<String, RefCell<Vec<u32>>>,
+        terminated: RefCell<Vec<u32>>,
+    }
+
+    impl FakeOps {
+        fn with_pids(name: &str, pids: &[u32]) -> Self {
+            let mut map = HashMap::new();
+            map.insert(name.to_string(), RefCell::new(pids.to_vec()));
+            Self {
+                pids_by_name: map,
+                terminated: RefCell::new(Vec::new()),
+            }
+        }
+
+        fn terminated(&self) -> Vec<u32> {
+            self.terminated.borrow().clone()
+        }
+    }
+
+    impl ProcessOps for FakeOps {
+        fn list_pids_by_name(&self, name: &str) -> Vec<u32> {
+            self.pids_by_name
+                .get(name)
+                .map(|c| c.borrow().clone())
+                .unwrap_or_default()
+        }
+
+        fn terminate(&self, pid: u32) -> bool {
+            self.terminated.borrow_mut().push(pid);
+            // Simulate the OS releasing the PID after termination so
+            // the polling loop in restart_named_process exits cleanly.
+            for entry in self.pids_by_name.values() {
+                entry.borrow_mut().retain(|p| *p != pid);
+            }
+            true
+        }
+    }
+
+    #[test]
+    fn restart_named_process_terminates_each_matching_pid_then_spawns() {
+        let ops = FakeOps::with_pids("whkd.exe", &[100, 200]);
+        let mut spawned = false;
+        restart_named_process(&ops, "whkd.exe", || {
+            spawned = true;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(ops.terminated(), vec![100, 200]);
+        assert!(spawned, "spawn_fn should run after termination");
+    }
+
+    /// Ops fake where `terminate` does NOT immediately remove the PID
+    /// from `list_pids_by_name` — it takes `releases_after` further
+    /// list-call returns before the PID disappears. Models real OS
+    /// behavior where TerminateProcess returns immediately but the
+    /// process table may still report the PID for a few milliseconds.
+    struct SlowReleaseOps {
+        image: String,
+        pids: RefCell<Vec<u32>>,
+        terminated_pending: RefCell<Vec<(u32, u32)>>, // (pid, polls_remaining)
+        list_calls: Cell<u32>,
+    }
+
+    impl SlowReleaseOps {
+        fn new(image: &str, pids: &[u32], releases_after: u32) -> Self {
+            Self {
+                image: image.to_string(),
+                pids: RefCell::new(pids.to_vec()),
+                terminated_pending: RefCell::new(
+                    pids.iter().map(|p| (*p, releases_after)).collect(),
+                ),
+                list_calls: Cell::new(0),
+            }
+        }
+    }
+
+    impl ProcessOps for SlowReleaseOps {
+        fn list_pids_by_name(&self, image_name: &str) -> Vec<u32> {
+            self.list_calls.set(self.list_calls.get() + 1);
+            if image_name != self.image {
+                return vec![];
+            }
+            // Decrement each pending PID's countdown; once it hits 0, drop.
+            let mut pending = self.terminated_pending.borrow_mut();
+            pending.retain_mut(|(pid, polls)| {
+                if *polls == 0 {
+                    self.pids.borrow_mut().retain(|p| p != pid);
+                    false
+                } else {
+                    *polls -= 1;
+                    true
+                }
+            });
+            self.pids.borrow().clone()
+        }
+
+        fn terminate(&self, _pid: u32) -> bool {
+            // No-op here; SlowReleaseOps simulates "termination signal sent
+            // but PID lingers" via the list_pids_by_name countdown.
+            true
+        }
+    }
+
+    #[test]
+    fn restart_named_process_polls_until_pids_clear_before_spawning() {
+        let ops = SlowReleaseOps::new("whkd.exe", &[100], 2);
+        let mut spawned_after_polls = 0;
+        restart_named_process(&ops, "whkd.exe", || {
+            spawned_after_polls = ops.list_calls.get();
+            Ok(())
+        })
+        .unwrap();
+        // Initial enumeration + at least 2 poll-after-terminate calls
+        // before the PID clears.
+        assert!(
+            spawned_after_polls >= 3,
+            "expected helper to poll ≥3 times before spawning, got {spawned_after_polls}"
+        );
     }
 }
