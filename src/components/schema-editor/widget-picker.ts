@@ -21,6 +21,10 @@ export type WidgetKey =
    *  four offset inputs. See [[no-json-as-ux]] — every config surface
    *  should have a typed widget, not a JSON textarea. */
   | "monitor-placement"
+  /** Structured editor for the static config's `monitors[].workspaces[]`
+   *  arrays (issue #64). Tabs per monitor, per-workspace name + layout
+   *  dropdown + delete. Live-applies through the Static pipeline. */
+  | "workspaces"
   | "unknown";
 
 const KNOWN_WIDGETS: ReadonlySet<WidgetKey> = new Set([
@@ -32,6 +36,7 @@ const KNOWN_WIDGETS: ReadonlySet<WidgetKey> = new Set([
   "object",
   "json",
   "monitor-placement",
+  "workspaces",
   "unknown",
 ]);
 
