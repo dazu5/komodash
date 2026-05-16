@@ -1,37 +1,40 @@
 {
-  "$schema": "https://raw.githubusercontent.com/LGUG2Z/komorebi/v0.1.41/schema.json",
-  "app_specific_configuration_path": "$Env:USERPROFILE/applications.json",
-  "window_hiding_behaviour": "Cloak",
-  "cross_monitor_move_behaviour": "Insert",
-  "default_workspace_padding": 10,
-  "default_container_padding": 10,
-  "mouse_follows_focus": true,
+  "$comment": "Komodash Starter config per ADR-0010. Written by the First-run wizard (#23) when an End user has no existing komorebi.json. Differs from `komorebic quickstart` on: mouse_follows_focus=true, animation.enabled=true with friendly timing, border on with distinct focused colour, and a baked-in floating_applications entry for komodash.exe so the dashboard window itself doesn't get tiled (which causes focus-chain weirdness when clicking workspace buttons inside Komodash — see issue #20 smoke-test feedback).",
+  "app_specific_configuration_path": null,
   "border": true,
   "border_width": 4,
   "border_offset": -1,
+  "border_style": "Rounded",
+  "border_colours": {
+    "single": "#3b82f6",
+    "stack": "#f59e0b",
+    "monocle": "#10b981",
+    "unfocused": "#27272a"
+  },
+  "default_workspace_padding": 8,
+  "default_container_padding": 6,
+  "mouse_follows_focus": true,
+  "focus_follows_mouse": null,
   "animation": {
-    "enabled": {
-      "global": true
-    },
-    "duration": {
-      "global": 250
-    },
-    "style": {
-      "global": "EaseOutCubic"
-    },
+    "enabled": true,
+    "duration": 250,
+    "style": "EaseOutCubic",
     "fps": 60
   },
-  "theme": {
-    "palette": "Base16",
-    "name": "Ashes"
+  "default_layout": "BSP",
+  "cross_monitor_move_behaviour": "Swap",
+  "cross_boundary_behaviour": "Monitor",
+  "unmanaged_window_operation_behaviour": "NoOp",
+  "window_hiding_behaviour": "Cloak",
+  "stackbar": {
+    "height": 24,
+    "mode": "OnStack"
   },
-  "monitors": [
+  "floating_applications": [
     {
-      "workspaces": [
-        { "name": "I", "layout": "BSP" },
-        { "name": "II", "layout": "BSP" },
-        { "name": "III", "layout": "BSP" }
-      ]
+      "kind": "Exe",
+      "id": "komodash.exe",
+      "matching_strategy": "Equals"
     }
   ]
 }
