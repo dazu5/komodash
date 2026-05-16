@@ -61,6 +61,26 @@ export default function AppRulesPage() {
     [buffer, setField],
   );
 
+  /**
+   * Bulk insert from a community-catalog import. Apply all rules to a
+   * local copy of the buffer, then push only the changed array keys
+   * through `setField` (one debounced flush per key).
+   */
+  const onImportRules = useCallback(
+    (rules: AppRule[]) => {
+      if (!buffer || rules.length === 0) return;
+      let updated: ReturnType<typeof insertRule> = buffer;
+      for (const rule of rules) {
+        updated = insertRule(updated, rule);
+      }
+      const changedKeys = new Set(rules.map((r) => ARRAY_KEY_FOR_KIND[r.kind]));
+      for (const key of changedKeys) {
+        setField(key, updated[key as keyof typeof updated]);
+      }
+    },
+    [buffer, setField],
+  );
+
   return (
     <div className="p-6 space-y-6">
       <PageHeader
@@ -112,6 +132,7 @@ export default function AppRulesPage() {
         open={modalOpen}
         onOpenChange={setModalOpen}
         onSave={onAddRule}
+        onImport={onImportRules}
       />
     </div>
   );

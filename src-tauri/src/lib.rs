@@ -655,6 +655,57 @@ async fn apply_whkdrc(state: tauri::State<'_, AppState>) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+// ---- Issue #24: Community catalog ------------------------------------------
+
+/// Run `komorebic fetch-app-specific-configuration` to download the
+/// latest community catalog (`applications.json`) into the user's home
+/// directory. Returns `Ok(())` on success. The frontend renders the
+/// stderr text on failure so the user can see why the download didn't
+/// land (offline, GitHub unreachable, etc.).
+#[tauri::command]
+async fn fetch_community_catalog(
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let client = state.komorebic.clone();
+    tokio::task::spawn_blocking(move || {
+        let info = client
+            .discover()
+            .ok_or_else(|| anyhow::anyhow!("komorebic.exe could not be located"))?;
+        let output = std::process::Command::new(&info.path)
+            .arg("fetch-app-specific-configuration")
+            .output()?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "komorebic fetch-app-specific-configuration failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        Ok::<(), anyhow::Error>(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}
+
+/// Read the community catalog from disk and return the raw JSON string.
+/// The frontend parses + searches via `src/lib/community-catalog.ts`.
+///
+/// Returns `Ok("")` if the file doesn't exist (the frontend renders a
+/// "Download library" affordance in that case). Returns an error only
+/// for unexpected I/O failures (permission denied, etc.).
+#[tauri::command]
+fn read_community_catalog() -> Result<String, String> {
+    let Some(home) = dirs::home_dir() else {
+        return Err("could not determine home directory".to_string());
+    };
+    let path = home.join("applications.json");
+    match std::fs::read_to_string(&path) {
+        Ok(contents) => Ok(contents),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(format!("failed to read {}: {e}", path.display())),
+    }
+}
+
 // ---- Issue #18 -------------------------------------------------------------
 
 /// Live-apply the Static configuration: tell the running Komorebi daemon
@@ -840,6 +891,8 @@ pub fn run() {
             get_bar_field_catalog,
             apply_bar_config,
             reset_monitor_work_area_offset,
+            fetch_community_catalog,
+            read_community_catalog,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
