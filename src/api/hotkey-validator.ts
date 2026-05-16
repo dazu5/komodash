@@ -22,7 +22,9 @@ export interface ValidationIssue {
     | "unknown-command"
     | "invalid-args"
     | "windows-reserved";
-  bindingIndex: number;
+  /** Index into the `WhkdrcModel.bindings` array (snake_case from
+   *  Rust's serde — the struct has no rename_all). */
+  binding_index: number;
   message: string;
 }
 

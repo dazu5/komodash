@@ -455,6 +455,69 @@ fn get_reserved_chords() -> Vec<Chord> {
     ReservedChordList::bundled().chords().to_vec()
 }
 
+// ---- Issue #20: hotkey editor -----------------------------------------------
+
+/// Read and parse the live `whkdrc` (issue #20). Returns the typed
+/// [`WhkdrcModel`] so the editor manipulates a structured shape rather
+/// than text. Empty file → empty model.
+#[tauri::command]
+fn read_whkdrc(state: tauri::State<'_, AppState>) -> Result<whkdrc_parser::WhkdrcModel, String> {
+    let path = state.komorebic.whkdrc_path().map_err(stringify_err)?;
+    let content = managed_config::read_with_kind(&path, Some(ConfigKind::Whkdrc))
+        .map_err(stringify_err)?;
+    if content.trim().is_empty() {
+        return Ok(whkdrc_parser::WhkdrcModel::default());
+    }
+    whkdrc_parser::parse(&content).map_err(stringify_err)
+}
+
+/// Serialise the model to canonical whkdrc form (per ADR-0003) and
+/// write it to disk via the standard managed_config path. Does NOT
+/// restart whkd — that's [`apply_whkdrc`]'s job, called separately
+/// per ADR-0006's buffered-apply semantics.
+#[tauri::command]
+fn write_whkdrc(
+    model: whkdrc_parser::WhkdrcModel,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let path = state.komorebic.whkdrc_path().map_err(stringify_err)?;
+    let content = whkdrc_parser::serialize(&model);
+    let backups = backups_root().map_err(stringify_err)?;
+    managed_config::write(&path, &content, ConfigKind::Whkdrc, &backups)
+        .map_err(stringify_err)
+}
+
+/// Run the [`hotkey_validator`] over a model + the cached Command
+/// catalog + the bundled reserved-chord list. Returns the full
+/// [`hotkey_validator::ValidationIssue`] list per ADR-0009.
+#[tauri::command]
+fn validate_hotkeys(
+    model: whkdrc_parser::WhkdrcModel,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<hotkey_validator::ValidationIssue>, String> {
+    let version = state
+        .komorebic
+        .discover()
+        .map(|info| info.version)
+        .ok_or_else(|| "komorebic is not installed".to_string())?;
+    let cache = command_catalog_cache_path().map_err(|e| e.to_string())?;
+    let catalog = command_catalog::load_or_build(&cache, state.komorebic.as_ref(), &version)
+        .map_err(|e| e.to_string())?;
+    let reserved = hotkey_validator::ReservedChordList::bundled();
+    Ok(hotkey_validator::validate(&model, &catalog, &reserved))
+}
+
+/// Restart whkd so the on-disk whkdrc changes take effect (issue #20,
+/// per ADR-0006 — buffered apply for whkdrc, not live-apply).
+#[tauri::command]
+async fn apply_whkdrc(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let client = state.komorebic.clone();
+    tokio::task::spawn_blocking(move || client.restart_whkd())
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
 // ---- Issue #18 -------------------------------------------------------------
 
 /// Live-apply the Static configuration: tell the running Komorebi daemon
@@ -577,6 +640,10 @@ pub fn run() {
             start_komorebi,
             stop_komorebi,
             apply_static_config,
+            read_whkdrc,
+            write_whkdrc,
+            validate_hotkeys,
+            apply_whkdrc,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

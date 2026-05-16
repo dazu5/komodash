@@ -61,8 +61,9 @@ pub struct KomorebiState {
 /// `unsubscribe_pipe`, `static_config_path`, `bar_config_path`,
 /// `whkdrc_path`, `static_config_schema`, `toggle_pause`,
 /// `toggle_mouse_follows_focus`, `toggle_float_override`, `retile`,
-/// `focus_workspace`, `start`, `stop`, `replace_configuration`) carry
-/// default-bail impls so pre-existing fakes that only implement
+/// `focus_workspace`, `start`, `stop`, `replace_configuration`,
+/// `restart_whkd`) carry default-bail impls so pre-existing fakes
+/// that only implement
 /// `discover` / `is_running` keep compiling.
 pub trait Komorebic: Send + Sync {
     /// Locate `komorebic.exe` and read its version. Returns `None` if the
@@ -193,6 +194,14 @@ pub trait Komorebic: Send + Sync {
     /// friendly inline messages.
     fn replace_configuration(&self, _path: &Path) -> Result<()> {
         anyhow::bail!("replace_configuration is not implemented for this Komorebic")
+    }
+
+    /// Restart the whkd hotkey daemon (issue #20). whkd doesn't hot-
+    /// reload — it has to be killed and respawned to pick up a new
+    /// whkdrc. Implementation kills `whkd.exe` and re-launches it via
+    /// `komorebic start --whkd` (idempotent at the komorebic layer).
+    fn restart_whkd(&self) -> Result<()> {
+        anyhow::bail!("restart_whkd is not implemented for this Komorebic")
     }
 }
 
@@ -346,6 +355,31 @@ impl Komorebic for WinKomorebic {
             .to_str()
             .ok_or_else(|| anyhow::anyhow!("config path is not valid UTF-8"))?;
         self.run_subcommand(&["replace-configuration", config_str])
+    }
+
+    fn restart_whkd(&self) -> Result<()> {
+        // Best-effort kill of whkd.exe — failures are tolerated because
+        // whkd might already be dead. Then komorebic start --whkd
+        // respawns it; that command is idempotent w.r.t. Komorebi itself
+        // (per #15 it's safe to call on a running Komorebi).
+        let _ = Command::new("taskkill")
+            .args(["/F", "/IM", "whkd.exe"])
+            .output();
+        // Give Windows a beat to release the binding before respawn.
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        let path = self
+            .locate()
+            .ok_or_else(|| anyhow::anyhow!("komorebic.exe could not be located"))?;
+        // `komorebic start --whkd` is what we use elsewhere; calling it
+        // while Komorebi is already running just relaunches whkd.
+        let output = Command::new(&path).args(["start", "--whkd"]).output()?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "komorebic start --whkd failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        Ok(())
     }
 }
 
