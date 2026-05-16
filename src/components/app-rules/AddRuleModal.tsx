@@ -40,6 +40,7 @@ export function AddRuleModal({
   onOpenChange,
   onSave,
   onImport,
+  prefillExe,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -47,6 +48,13 @@ export function AddRuleModal({
   onSave: (rule: AppRule) => void;
   /** Called when the Community tab imports a catalog entry as N rules. */
   onImport: (rules: AppRule[]) => void;
+  /**
+   * Pre-fill the Manual tab's exe identifier when the modal is opened
+   * via the Dashboard's "Add to App Rules" context-menu action
+   * (issue #26). When set, the wizard opens directly on the Manual
+   * tab with the exe filled in.
+   */
+  prefillExe?: string | null;
 }) {
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
@@ -90,6 +98,7 @@ export function AddRuleModal({
                   onOpenChange(false);
                 }}
                 onCancel={() => onOpenChange(false)}
+                prefillExe={prefillExe}
               />
             </Tabs.Content>
 
@@ -124,14 +133,25 @@ export function AddRuleModal({
 function ManualRuleForm({
   onSave,
   onCancel,
+  prefillExe,
 }: {
   onSave: (rule: AppRule) => void;
   onCancel: () => void;
+  prefillExe?: string | null;
 }) {
   const [kind, setKind] = useState<RuleKind>("ignore");
   const [identifierKind, setIdentifierKind] = useState<IdentifierKind>("Exe");
-  const [id, setId] = useState("");
+  const [id, setId] = useState(prefillExe ?? "");
   const [workspace, setWorkspace] = useState<number>(0);
+
+  // If the prefill arrives after mount (e.g. user opens the modal a
+  // second time via the Dashboard), update the field accordingly.
+  useEffect(() => {
+    if (prefillExe) {
+      setId(prefillExe);
+      setIdentifierKind("Exe");
+    }
+  }, [prefillExe]);
 
   const reset = useCallback(() => {
     setKind("ignore");

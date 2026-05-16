@@ -13,6 +13,7 @@ import {
   type KomorebiState,
 } from "@/api/komorebi";
 import { useLiveState, type LiveStateStatus } from "@/stores/live-state";
+import { WindowContextMenu } from "@/components/dashboard/WindowContextMenu";
 import { cn } from "@/lib/utils";
 
 /**
@@ -361,12 +362,14 @@ function WindowRow({ window: w }: { window: unknown }) {
   const title = getString(w, "title") ?? "(untitled)";
   const exe = getString(w, "exe") ?? "(unknown)";
   return (
-    <li className="flex items-center gap-2 text-xs">
-      <span className="truncate text-foreground/90" title={title}>
-        {title}
-      </span>
-      <span className="ml-auto text-muted-foreground shrink-0">{exe}</span>
-    </li>
+    <WindowContextMenu exe={exe}>
+      <li className="flex items-center gap-2 text-xs px-1 -mx-1 rounded hover:bg-secondary/30">
+        <span className="truncate text-foreground/90" title={title}>
+          {title}
+        </span>
+        <span className="ml-auto text-muted-foreground shrink-0">{exe}</span>
+      </li>
+    </WindowContextMenu>
   );
 }
 
