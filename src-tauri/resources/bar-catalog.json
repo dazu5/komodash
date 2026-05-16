@@ -20,9 +20,9 @@
     },
     "theme": {
       "label": "Theme",
-      "description": "Colour palette + accent. The Base16 palettes ship with the bar.",
+      "description": "Colour palette + accent. The Base16 palettes ship with the bar. Accepts a preset name (string) or a full theme object.",
       "section": "appearance",
-      "widget": "object"
+      "widget": "json"
     },
     "transparency": {
       "label": "Transparency",
@@ -32,15 +32,15 @@
     },
     "monitor": {
       "label": "Monitor placement",
-      "description": "Which physical monitor(s) the bar appears on, and where on each monitor it docks. Required for multi-monitor setups — the default targets monitor index 0 only.",
+      "description": "Pick which monitor the bar appears on. Komodash automatically reserves the bar's pixels so tiled windows don't draw behind it.",
       "section": "monitor",
-      "widget": "object"
+      "widget": "monitor-placement"
     },
     "position": {
       "label": "Bar position",
-      "description": "Absolute pixel rectangle for the bar. Usually computed from `monitor` settings; override here for unusual layouts.",
+      "description": "Override the bar's pixel rectangle. Usually computed from `monitor` settings; override here for unusual layouts. Accepts an object like `{ \"start\": { \"x\": 0, \"y\": 0 }, \"end\": { \"x\": 1920, \"y\": 0 } }`.",
       "section": "monitor",
-      "widget": "object"
+      "widget": "json"
     },
     "left_widgets": {
       "label": "Left-side widgets",

@@ -40,3 +40,19 @@ export async function getBarFieldCatalog(): Promise<FieldCatalog> {
 export async function applyBarConfig(): Promise<void> {
   await invoke<void>("apply_bar_config");
 }
+
+/**
+ * Release a monitor's runtime work-area offset (set it back to all
+ * zeros). Used when the bar moves to a different monitor — without
+ * this, Komorebi keeps the previous monitor's reserved bar pixels and
+ * windows there don't reflow into the freed space.
+ *
+ * Best-effort: throws if Komorebi isn't running or the monitor index
+ * is bogus, but the caller (BarConfig Apply path) should swallow the
+ * failure and continue with the bar restart.
+ */
+export async function resetMonitorWorkAreaOffset(
+  monitorIndex: number,
+): Promise<void> {
+  await invoke<void>("reset_monitor_work_area_offset", { monitorIndex });
+}

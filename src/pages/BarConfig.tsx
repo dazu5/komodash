@@ -9,6 +9,7 @@ import {
   applyBarConfig,
   getBarFieldCatalog,
   getBarSchema,
+  resetMonitorWorkAreaOffset,
 } from "@/api/bar";
 import type { FieldCatalog } from "@/api/field-catalog";
 import { detectKomorebi } from "@/api/komorebi";
@@ -32,6 +33,7 @@ export default function BarConfigPage() {
   const { running } = useKomorebiRunning();
   const {
     value,
+    baseline,
     loadError,
     pendingCount,
     applying,
@@ -42,6 +44,28 @@ export default function BarConfigPage() {
 
   const onApply = useCallback(async () => {
     try {
+      // Detect a monitor switch by comparing baseline (currently-
+      // running config) to value (about-to-apply). If the bar is
+      // moving to a different monitor, explicitly release the
+      // abandoned monitor's work-area offset first — otherwise
+      // Komorebi keeps the old reservation and windows on that
+      // monitor don't reflow into the freed space. Best-effort:
+      // we swallow this call's failure so the bar restart still
+      // happens.
+      const prevIdx = extractMonitorIndex(baseline);
+      const nextIdx = extractMonitorIndex(JSON.stringify(value));
+      if (
+        prevIdx !== null &&
+        nextIdx !== null &&
+        prevIdx !== nextIdx
+      ) {
+        try {
+          await resetMonitorWorkAreaOffset(prevIdx);
+        } catch {
+          // Komorebi might not be running, or the index is stale.
+          // The bar restart below is still worth attempting.
+        }
+      }
       await apply();
       toast.success("Status bar restarted with new configuration");
     } catch (e) {
@@ -49,7 +73,7 @@ export default function BarConfigPage() {
         `Couldn't apply bar config: ${e instanceof Error ? e.message : String(e)}`,
       );
     }
-  }, [apply]);
+  }, [apply, baseline, value]);
 
   return (
     <div className="p-6 space-y-6">
@@ -187,6 +211,39 @@ function useBarSchemaSurface() {
   }, []);
 
   return { schema, catalog, error };
+}
+
+/**
+ * Pull the bar's target monitor index out of a serialised
+ * `komorebi.bar.json` string. The `monitor` field is an anyOf union —
+ * accepts a bare integer index OR a `{ index, work_area_offset? }`
+ * object. Returns null if neither form is present, the JSON is
+ * unparseable, or the field is absent.
+ *
+ * Used by the Apply path to detect a monitor-switch so we can release
+ * the abandoned monitor's reserved bar pixels before restarting the
+ * bar — without this, Komorebi keeps the previous monitor's
+ * work-area offset and windows there don't reflow.
+ */
+function extractMonitorIndex(serialised: string | null): number | null {
+  if (serialised === null) return null;
+  try {
+    const obj = JSON.parse(serialised);
+    if (!obj || typeof obj !== "object") return null;
+    const m = (obj as Record<string, unknown>).monitor;
+    if (typeof m === "number" && Number.isFinite(m)) {
+      return Math.trunc(m);
+    }
+    if (m && typeof m === "object" && !Array.isArray(m)) {
+      const idx = (m as Record<string, unknown>).index;
+      if (typeof idx === "number" && Number.isFinite(idx)) {
+        return Math.trunc(idx);
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 function useKomorebiRunning() {

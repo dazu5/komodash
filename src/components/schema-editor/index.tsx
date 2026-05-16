@@ -10,6 +10,8 @@ import {
   ArrayPreview,
   BooleanWidget,
   EnumWidget,
+  JsonValueWidget,
+  MonitorPlacementWidget,
   NumberWidget,
   ObjectPreview,
   StringWidget,
@@ -226,9 +228,68 @@ function FieldWidget({
         />
       );
     case "array":
-      return <ArrayPreview value={Array.isArray(value) ? value : []} />;
+      // Read-only: keep the compact preview from #11. Editable: fall
+      // through to the JSON textarea fallback (#19 stopgap) until we
+      // ship a typed nested editor.
+      if (readonly) {
+        return <ArrayPreview value={Array.isArray(value) ? value : []} />;
+      }
+      return (
+        <JsonValueWidget
+          value={value}
+          readonly={false}
+          expectedKind="array"
+          onChange={onChange}
+        />
+      );
     case "object":
-      return <ObjectPreview value={isObject(value) ? value : null} />;
+      if (readonly) {
+        return <ObjectPreview value={isObject(value) ? value : null} />;
+      }
+      return (
+        <JsonValueWidget
+          value={value}
+          readonly={false}
+          expectedKind="object"
+          onChange={onChange}
+        />
+      );
+    case "monitor-placement":
+      // Structured editor for the bar's `monitor` field (#19 polish).
+      // Read-only just shows the JSON shape since this is rarely
+      // shown read-only (it's a bar-only widget today).
+      if (readonly) {
+        return isObject(value) ? (
+          <ObjectPreview value={value} />
+        ) : (
+          <UnknownWidget value={value} />
+        );
+      }
+      return (
+        <MonitorPlacementWidget
+          value={value}
+          readonly={false}
+          onChange={onChange}
+        />
+      );
+    case "json":
+      // Freeform JSON — for anyOf unions where the top-level kind
+      // varies (integer | object | null etc.). No kind check.
+      if (readonly) {
+        return isObject(value) ? (
+          <ObjectPreview value={value} />
+        ) : (
+          <UnknownWidget value={value} />
+        );
+      }
+      return (
+        <JsonValueWidget
+          value={value}
+          readonly={false}
+          expectedKind="any"
+          onChange={onChange}
+        />
+      );
     case "unknown":
     default:
       return <UnknownWidget value={value} />;

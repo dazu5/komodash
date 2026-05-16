@@ -473,14 +473,112 @@ fn get_bar_field_catalog() -> FieldCatalog {
 
 /// Restart the Komorebi bar daemon so a fresh `komorebi.bar.json` takes
 /// effect (issue #19, per ADR-0006 buffered-apply — the bar daemon
-/// doesn't hot-reload). Same shape as #20's `apply_whkdrc`.
+/// doesn't hot-reload).
+///
+/// Empirically the bar's IPC reservation isn't reliable on restart:
+/// after taskkill + relaunch, Komorebi's per-monitor
+/// `work_area_offset` stays at zero even with a non-zero
+/// `monitor.work_area_offset` in `komorebi.bar.json`. So Komodash
+/// can't trust the bar to register its own reservation. This command
+/// owns the whole choreography:
+///
+///   1. Read the on-disk bar config to learn the target monitor +
+///      offsets the user wants.
+///   2. Restart `komorebi-bar.exe` (so the visual bar moves).
+///   3. Explicitly call `komorebic monitor-work-area-offset` on the
+///      target monitor with the configured offsets — this is the
+///      step that actually causes Komorebi to reserve the pixels.
+///   4. Retile so existing windows reflow into the new work area.
+///
+/// Step 3's offsets are best-effort: if Komorebi isn't running, the
+/// call errors and we still return Ok (the bar restart is the
+/// user-visible action; the offset is a tiling enhancement).
 #[tauri::command]
 async fn apply_bar_config(state: tauri::State<'_, AppState>) -> Result<(), String> {
     let client = state.komorebic.clone();
-    tokio::task::spawn_blocking(move || client.restart_bar())
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+    let path = client.bar_config_path().map_err(|e| e.to_string())?;
+    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        // 1. Read the saved bar config so we know the target monitor
+        //    and offsets to apply directly.
+        let raw = std::fs::read_to_string(&path).unwrap_or_default();
+        let target = parse_bar_monitor_target(&raw);
+
+        // 2. Restart the bar — gives the user the visual relocation.
+        client.restart_bar()?;
+
+        // 3. Push the work-area reservation directly. Best-effort: if
+        //    Komorebi isn't running, log and continue.
+        if let Some((idx, offset)) = target {
+            let _ = client.monitor_work_area_offset(
+                idx,
+                offset.left,
+                offset.top,
+                offset.right,
+                offset.bottom,
+            );
+            // 4. Force a re-tile so existing windows reflow.
+            let _ = client.retile();
+        }
+
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}
+
+/// Per-monitor work-area offset shape used in `komorebi.bar.json`.
+/// Defaults to zeros so an integer-only `monitor: N` config still
+/// produces a usable (no-reservation) tuple.
+#[derive(Debug, Default, Clone, Copy)]
+struct BarMonitorOffset {
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+}
+
+/// Pull the bar's target monitor index + `work_area_offset` out of a
+/// `komorebi.bar.json` blob. The `monitor` field is an anyOf union:
+/// either a bare integer index OR `{index, work_area_offset?}`.
+/// Returns `None` if the field is absent or unparseable.
+fn parse_bar_monitor_target(raw: &str) -> Option<(u32, BarMonitorOffset)> {
+    let v: serde_json::Value = serde_json::from_str(raw).ok()?;
+    let m = v.get("monitor")?;
+    if let Some(i) = m.as_u64() {
+        return Some((i as u32, BarMonitorOffset::default()));
+    }
+    if let Some(obj) = m.as_object() {
+        let idx = obj.get("index")?.as_u64()? as u32;
+        let mut off = BarMonitorOffset::default();
+        if let Some(o) = obj.get("work_area_offset").and_then(|v| v.as_object()) {
+            off.left = o.get("left").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            off.top = o.get("top").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            off.right = o.get("right").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            off.bottom = o.get("bottom").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+        }
+        return Some((idx, off));
+    }
+    None
+}
+
+/// Reset a monitor's runtime work-area offset to zero on all sides
+/// (issue #19 polish). Called from the frontend when the user moves
+/// the bar from one monitor to another — without this, Komorebi keeps
+/// the abandoned monitor's reserved bar pixels and its tiled windows
+/// don't reflow into the freed space.
+#[tauri::command]
+async fn reset_monitor_work_area_offset(
+    state: tauri::State<'_, AppState>,
+    monitor_index: u32,
+) -> Result<(), String> {
+    let client = state.komorebic.clone();
+    tokio::task::spawn_blocking(move || {
+        client.monitor_work_area_offset(monitor_index, 0, 0, 0, 0)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
 }
 
 // ---- Issue #12 -------------------------------------------------------------
@@ -547,6 +645,61 @@ fn backups_root() -> anyhow::Result<PathBuf> {
 /// frontend can show. Bubbles via Tauri serialisation.
 fn stringify_err<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_monitor_as_bare_integer() {
+        let raw = r#"{ "monitor": 1 }"#;
+        let (idx, off) = parse_bar_monitor_target(raw).expect("parses");
+        assert_eq!(idx, 1);
+        assert_eq!(off.left, 0);
+        assert_eq!(off.top, 0);
+        assert_eq!(off.right, 0);
+        assert_eq!(off.bottom, 0);
+    }
+
+    #[test]
+    fn parses_monitor_as_object_with_offsets() {
+        let raw = r#"{
+            "monitor": {
+                "index": 2,
+                "work_area_offset": {
+                    "left": 4, "top": 32, "right": 8, "bottom": 32
+                }
+            }
+        }"#;
+        let (idx, off) = parse_bar_monitor_target(raw).expect("parses");
+        assert_eq!(idx, 2);
+        assert_eq!(off.left, 4);
+        assert_eq!(off.top, 32);
+        assert_eq!(off.right, 8);
+        assert_eq!(off.bottom, 32);
+    }
+
+    #[test]
+    fn parses_monitor_as_object_with_no_offsets() {
+        // Object form without `work_area_offset` — should still parse
+        // the index and yield default (zero) offsets.
+        let raw = r#"{ "monitor": { "index": 0 } }"#;
+        let (idx, off) = parse_bar_monitor_target(raw).expect("parses");
+        assert_eq!(idx, 0);
+        assert_eq!(off.top, 0);
+    }
+
+    #[test]
+    fn returns_none_when_monitor_absent() {
+        let raw = r#"{ "font_size": 12 }"#;
+        assert!(parse_bar_monitor_target(raw).is_none());
+    }
+
+    #[test]
+    fn returns_none_on_unparseable_input() {
+        assert!(parse_bar_monitor_target("not json at all").is_none());
+    }
 }
 
 // ---- entrypoint ------------------------------------------------------------
@@ -619,6 +772,7 @@ pub fn run() {
             get_bar_schema,
             get_bar_field_catalog,
             apply_bar_config,
+            reset_monitor_work_area_offset,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

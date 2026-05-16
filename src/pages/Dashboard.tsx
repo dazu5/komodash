@@ -90,23 +90,13 @@ function NotRunningCta({
   crashed: boolean;
   onAfterStart: () => Promise<void>;
 }) {
+  // ⚠️ Rules of Hooks: every hook MUST run unconditionally on every
+  // render. The early `!installed` return must come AFTER all hook
+  // calls, or React sees a different hook count when `installed`
+  // flips and crashes with "Rendered more hooks than during the
+  // previous render." (Fixed once on #20's branch — re-applied here
+  // because #19 was cut from main before that fix landed.)
   const [busy, setBusy] = useState(false);
-
-  // Komorebi not installed at all — direct the user toward the install
-  // path. The first-run wizard (#23) will eventually consume this; for
-  // now the About-page install panel from #9 is the workaround.
-  if (!installed) {
-    return (
-      <div className="rounded-lg border border-dashed border-border p-10 text-center space-y-3">
-        <h3 className="text-sm font-medium">Komorebi isn't installed</h3>
-        <p className="text-xs text-muted-foreground max-w-md mx-auto">
-          Komodash couldn't find <code>komorebic.exe</code> on this machine.
-          Head to the About page and use the install panel — it'll install
-          Komorebi via winget or Scoop.
-        </p>
-      </div>
-    );
-  }
 
   const onStart = useCallback(async () => {
     setBusy(true);
@@ -131,6 +121,22 @@ function NotRunningCta({
       window.setTimeout(() => setBusy(false), 2_000);
     }
   }, [crashed, onAfterStart]);
+
+  // Komorebi not installed at all — direct the user toward the install
+  // path. The first-run wizard (#23) will eventually consume this; for
+  // now the About-page install panel from #9 is the workaround.
+  if (!installed) {
+    return (
+      <div className="rounded-lg border border-dashed border-border p-10 text-center space-y-3">
+        <h3 className="text-sm font-medium">Komorebi isn't installed</h3>
+        <p className="text-xs text-muted-foreground max-w-md mx-auto">
+          Komodash couldn't find <code>komorebic.exe</code> on this machine.
+          Head to the About page and use the install panel — it'll install
+          Komorebi via winget or Scoop.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="rounded-lg border border-dashed border-border p-10 text-center space-y-4">

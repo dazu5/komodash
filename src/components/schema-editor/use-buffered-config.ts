@@ -141,6 +141,14 @@ export function useBufferedConfig({
     content,
     /** Parsed JSON object the editor renders. */
     value,
+    /**
+     * The last-applied baseline as a JSON string — i.e. what the daemon
+     * is currently running against. Callers compare this to `value` to
+     * compute deltas before invoking `apply` (e.g. the bar editor needs
+     * the *previous* monitor.index so it can release that monitor's
+     * work-area offset before the bar moves elsewhere).
+     */
+    baseline: baselineRef.current,
     /** Mount-time load error (typically only if the file is malformed). */
     loadError,
     /** Edits-since-last-apply count. */

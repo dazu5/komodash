@@ -13,6 +13,14 @@ export type WidgetKey =
   | "string"
   | "array"
   | "object"
+  /** Freeform JSON editor — for `anyOf` unions and other shapes whose
+   *  top-level kind isn't fixed. Stopgap; prefer a structured widget
+   *  where one exists. */
+  | "json"
+  /** Structured bar `monitor` editor: dropdown for monitor index +
+   *  four offset inputs. See [[no-json-as-ux]] — every config surface
+   *  should have a typed widget, not a JSON textarea. */
+  | "monitor-placement"
   | "unknown";
 
 const KNOWN_WIDGETS: ReadonlySet<WidgetKey> = new Set([
@@ -22,6 +30,8 @@ const KNOWN_WIDGETS: ReadonlySet<WidgetKey> = new Set([
   "string",
   "array",
   "object",
+  "json",
+  "monitor-placement",
   "unknown",
 ]);
 
