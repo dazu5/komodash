@@ -5,6 +5,7 @@ import type { FieldCatalog, SectionSpec } from "@/api/field-catalog";
 import type { JsonSchema } from "@/api/schema";
 import { cn } from "@/lib/utils";
 import { extractAnimationStyles } from "@/lib/animation";
+import { extractPaletteNames, type Palette } from "@/lib/theme";
 import { extractLayoutOptions } from "@/lib/workspaces";
 
 import {
@@ -23,6 +24,7 @@ import {
   NumberWidget,
   ObjectPreview,
   StringWidget,
+  ThemeWidget,
   UnknownWidget,
   WorkspacesWidget,
 } from "./widgets";
@@ -75,6 +77,14 @@ export function SchemaEditor({
     () => extractAnimationStyles(schema),
     [schema],
   );
+  const themeVariants = useMemo<Record<Palette, string[]>>(
+    () => ({
+      Catppuccin: extractPaletteNames(schema, "Catppuccin"),
+      Base16: extractPaletteNames(schema, "Base16"),
+      Custom: [],
+    }),
+    [schema],
+  );
   const ro = readonly ?? false;
 
   if (grouped.length === 0) {
@@ -97,6 +107,7 @@ export function SchemaEditor({
           readonly={ro}
           layoutOptions={layoutOptions}
           animationStyles={animationStyles}
+          themeVariants={themeVariants}
           onFieldChange={onFieldChange}
         />
       ))}
@@ -124,6 +135,7 @@ function SectionBlock({
   readonly,
   layoutOptions,
   animationStyles,
+  themeVariants,
   onFieldChange,
 }: {
   section: SectionSpec;
@@ -132,6 +144,7 @@ function SectionBlock({
   readonly: boolean;
   layoutOptions: string[];
   animationStyles: string[];
+  themeVariants: Record<Palette, string[]>;
   onFieldChange?: (key: string, next: unknown) => void;
 }) {
   return (
@@ -148,6 +161,7 @@ function SectionBlock({
             readonly={readonly}
             layoutOptions={layoutOptions}
             animationStyles={animationStyles}
+            themeVariants={themeVariants}
             onChange={
               onFieldChange ? (next) => onFieldChange(f.name, next) : undefined
             }
@@ -166,6 +180,7 @@ function FieldRow({
   readonly,
   layoutOptions,
   animationStyles,
+  themeVariants,
   onChange,
 }: {
   field: GroupedField;
@@ -173,6 +188,7 @@ function FieldRow({
   readonly: boolean;
   layoutOptions: string[];
   animationStyles: string[];
+  themeVariants: Record<Palette, string[]>;
   onChange?: (next: unknown) => void;
 }) {
   const widget = pickWidget(field.schema, field.overlay);
@@ -199,6 +215,7 @@ function FieldRow({
           enumValues={enumValues}
           layoutOptions={layoutOptions}
           animationStyles={animationStyles}
+          themeVariants={themeVariants}
         />
         {description && (
           <p className="text-xs text-muted-foreground">{description}</p>
@@ -216,6 +233,7 @@ function FieldWidget({
   enumValues,
   layoutOptions,
   animationStyles,
+  themeVariants,
 }: {
   widget: WidgetKey;
   value: unknown;
@@ -224,6 +242,7 @@ function FieldWidget({
   enumValues: string[];
   layoutOptions: string[];
   animationStyles: string[];
+  themeVariants: Record<Palette, string[]>;
 }) {
   switch (widget) {
     case "checkbox":
@@ -311,6 +330,16 @@ function FieldWidget({
           value={value}
           readonly={readonly}
           animationStyles={animationStyles}
+          onChange={onChange}
+        />
+      );
+    case "theme":
+      // Palette + variant picker (#77).
+      return (
+        <ThemeWidget
+          value={value}
+          readonly={readonly}
+          themeVariants={themeVariants}
           onChange={onChange}
         />
       );

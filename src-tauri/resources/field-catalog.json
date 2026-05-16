@@ -134,7 +134,7 @@
       "label": "Theme",
       "description": "Colour palette applied to the bar, stack indicator, and border colours when no per-state override is set.",
       "section": "borders",
-      "widget": "object"
+      "widget": "theme"
     },
     "border_z_order": {
       "label": "Border z-order",

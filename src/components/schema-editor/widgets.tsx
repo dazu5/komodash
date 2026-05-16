@@ -21,6 +21,12 @@ import {
   type BorderColourState,
 } from "@/lib/border-colours";
 import {
+  buildThemeValue,
+  KNOWN_PALETTES,
+  parseTheme,
+  type Palette,
+} from "@/lib/theme";
+import {
   addWorkspace,
   createMonitors,
   parseMonitors,
@@ -1080,6 +1086,98 @@ export function AnimationWidget({
         disabled={readonly}
         onChange={(e) => emit("fps", Number(e.target.value))}
       />
+    </div>
+  );
+}
+
+/**
+ * Theme picker (issue #77). Two-dropdown UX: palette kind, then
+ * variant. Variants are sourced from the live schema, so when
+ * komorebi adds a new Base16 theme it shows up without a Komodash
+ * release. The Custom palette variant isn't editable yet — we render
+ * a notice instead so the user's custom palette isn't silently
+ * replaced by a Catppuccin selection.
+ */
+export function ThemeWidget({
+  value,
+  readonly,
+  themeVariants,
+  onChange,
+}: {
+  value: unknown;
+  readonly: boolean;
+  /** Variant names extracted from `$defs.Catppuccin` / `$defs.Base16`
+   *  by the SchemaEditor. Empty arrays disable the variant dropdown. */
+  themeVariants: Record<Palette, string[]>;
+  onChange?: (next: unknown) => void;
+}) {
+  const parsed = parseTheme(value);
+
+  const emitPalette = (palette: Palette | null) => {
+    if (palette === null) {
+      onChange?.(null);
+      return;
+    }
+    // Pick a default variant when switching palettes so the on-disk
+    // value is immediately valid (komorebi rejects a palette without
+    // its required `name` field for the named variants).
+    const fallback = themeVariants[palette]?.[0] ?? null;
+    onChange?.(buildThemeValue(palette, fallback));
+  };
+
+  const emitName = (name: string) => {
+    if (parsed.palette === null) return;
+    onChange?.(buildThemeValue(parsed.palette, name));
+  };
+
+  const variants = parsed.palette ? themeVariants[parsed.palette] : [];
+  const showVariants = parsed.palette !== null && parsed.palette !== "Custom";
+  const variantChoices =
+    parsed.name && variants && !variants.includes(parsed.name)
+      ? [parsed.name, ...variants]
+      : variants;
+
+  return (
+    <div className="space-y-2">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+        <select
+          className={baseInput}
+          value={parsed.palette ?? ""}
+          disabled={readonly}
+          onChange={(e) =>
+            emitPalette(e.target.value === "" ? null : (e.target.value as Palette))
+          }
+        >
+          <option value="">(no theme)</option>
+          {KNOWN_PALETTES.map((p) => (
+            <option key={p} value={p}>
+              {p}
+            </option>
+          ))}
+        </select>
+        {showVariants && variantChoices.length > 0 && (
+          <select
+            className={baseInput}
+            value={parsed.name ?? ""}
+            disabled={readonly}
+            onChange={(e) => emitName(e.target.value)}
+          >
+            {variantChoices.map((v) => (
+              <option key={v} value={v}>
+                {v}
+              </option>
+            ))}
+          </select>
+        )}
+      </div>
+      {parsed.isCustom && (
+        <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+          You're using a Custom theme. Komodash's picker doesn't ship a
+          custom-palette editor yet — switch to Catppuccin or Base16
+          would overwrite your custom palette. Edit komorebi.json
+          directly to tune it.
+        </div>
+      )}
     </div>
   );
 }
