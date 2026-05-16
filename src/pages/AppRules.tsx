@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { CircleCheck, Plus, PlayCircle } from "lucide-react";
 
 import { PageHeader } from "@/components/page-shell";
@@ -40,6 +41,21 @@ export default function AppRulesPage() {
 
   const rules = useMemo(() => (buffer ? flattenRules(buffer) : []), [buffer]);
   const [modalOpen, setModalOpen] = useState(false);
+
+  // Open the modal pre-filled when arriving via the Dashboard's
+  // "Add to App Rules" context-menu action (issue #26): URL has
+  // ?prefill_exe=<exe>. We pop the param out of the URL after
+  // consuming it so refreshes don't re-trigger.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const prefillExe = searchParams.get("prefill_exe");
+  useEffect(() => {
+    if (prefillExe) {
+      setModalOpen(true);
+      const next = new URLSearchParams(searchParams);
+      next.delete("prefill_exe");
+      setSearchParams(next, { replace: true });
+    }
+  }, [prefillExe, searchParams, setSearchParams]);
 
   const onAddRule = useCallback(
     (rule: AppRule) => {
@@ -133,6 +149,7 @@ export default function AppRulesPage() {
         onOpenChange={setModalOpen}
         onSave={onAddRule}
         onImport={onImportRules}
+        prefillExe={prefillExe}
       />
     </div>
   );

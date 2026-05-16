@@ -778,6 +778,80 @@ fn stringify_err<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
 }
 
+// ---- Issue #26: Window context menu ----------------------------------------
+
+/// Toggle the floating state of the currently-focused window
+/// (`komorebic toggle-float`). The Dashboard right-click context menu
+/// drives this; the user is expected to have clicked the window's row
+/// first to focus it.
+#[tauri::command]
+async fn toggle_focused_window_float(
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let client = state.komorebic.clone();
+    tokio::task::spawn_blocking(move || run_komorebic_subcommand(client.as_ref(), "toggle-float"))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+/// Close the currently-focused window (`komorebic close`).
+#[tauri::command]
+async fn close_focused_window(
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let client = state.komorebic.clone();
+    tokio::task::spawn_blocking(move || run_komorebic_subcommand(client.as_ref(), "close"))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+/// Move the focused window to (monitor, workspace) via
+/// `komorebic move-to-workspace`. komorebic interprets the workspace
+/// argument relative to the focused monitor, so we focus the target
+/// monitor first.
+#[tauri::command]
+async fn move_focused_window_to_workspace(
+    state: tauri::State<'_, AppState>,
+    monitor_index: usize,
+    workspace_index: usize,
+) -> Result<(), String> {
+    let client = state.komorebic.clone();
+    tokio::task::spawn_blocking(move || {
+        let info = client
+            .discover()
+            .ok_or_else(|| anyhow::anyhow!("komorebic.exe could not be located"))?;
+        let monitor_str = monitor_index.to_string();
+        let workspace_str = workspace_index.to_string();
+        // Focus target monitor first so move-to-workspace lands on the
+        // right one (komorebic move-to-workspace operates relative to
+        // the focused monitor's workspace ring).
+        let focus_out = std::process::Command::new(&info.path)
+            .args(["focus-monitor", &monitor_str])
+            .output()?;
+        if !focus_out.status.success() {
+            anyhow::bail!(
+                "komorebic focus-monitor {monitor_index} failed: {}",
+                String::from_utf8_lossy(&focus_out.stderr).trim()
+            );
+        }
+        let move_out = std::process::Command::new(&info.path)
+            .args(["move-to-workspace", &workspace_str])
+            .output()?;
+        if !move_out.status.success() {
+            anyhow::bail!(
+                "komorebic move-to-workspace {workspace_index} failed: {}",
+                String::from_utf8_lossy(&move_out.stderr).trim()
+            );
+        }
+        Ok::<(), anyhow::Error>(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}
+
 // ---- Issue #25: Visible windows --------------------------------------------
 
 /// Run `komorebic visible-windows` and return the raw JSON string.
@@ -1071,6 +1145,9 @@ pub fn run() {
             enable_autostart,
             disable_autostart,
             get_visible_windows,
+            toggle_focused_window_float,
+            close_focused_window,
+            move_focused_window_to_workspace,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
