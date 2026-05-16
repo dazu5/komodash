@@ -1,11 +1,15 @@
 import { useMemo } from "react";
 
 import type { ApplyError } from "@/api/apply";
-import type { FieldCatalog, FieldOverlay, SectionSpec } from "@/api/field-catalog";
+import type { FieldCatalog, SectionSpec } from "@/api/field-catalog";
 import type { JsonSchema } from "@/api/schema";
 import { cn } from "@/lib/utils";
 import { extractLayoutOptions } from "@/lib/workspaces";
 
+import {
+  groupFieldsBySection,
+  type GroupedField,
+} from "./group-fields";
 import { pickWidget, type WidgetKey } from "./widget-picker";
 import {
   ArrayPreview,
@@ -321,59 +325,8 @@ function FieldWidget({
 }
 
 // ---- grouping --------------------------------------------------------------
-
-interface GroupedField {
-  name: string;
-  schema: JsonSchema;
-  overlay: FieldOverlay | null;
-}
-
-interface GroupedSection {
-  section: SectionSpec;
-  fields: GroupedField[];
-}
-
-function groupFieldsBySection(
-  schema: JsonSchema,
-  catalog: FieldCatalog,
-): GroupedSection[] {
-  const props = schema.properties ?? {};
-  const sectionById = new Map(catalog.sections.map((s) => [s.id, s]));
-  const buckets = new Map<string, GroupedField[]>();
-  const OTHER_ID = "__other__";
-
-  for (const [name, fieldSchema] of Object.entries(props)) {
-    const overlay = catalog.fields[name] ?? null;
-    const sectionId =
-      overlay && sectionById.has(overlay.section) ? overlay.section : OTHER_ID;
-    const bucket = buckets.get(sectionId) ?? [];
-    bucket.push({ name, schema: fieldSchema, overlay });
-    buckets.set(sectionId, bucket);
-  }
-
-  const out: GroupedSection[] = [];
-  const orderedSections = [...catalog.sections].sort(
-    (a, b) => a.order - b.order,
-  );
-  for (const section of orderedSections) {
-    const fields = buckets.get(section.id);
-    if (fields && fields.length > 0) {
-      out.push({ section, fields: sortFields(fields) });
-    }
-  }
-  const others = buckets.get(OTHER_ID);
-  if (others && others.length > 0) {
-    out.push({
-      section: { id: OTHER_ID, label: "Other", order: Number.MAX_SAFE_INTEGER },
-      fields: sortFields(others),
-    });
-  }
-  return out;
-}
-
-function sortFields(fields: GroupedField[]): GroupedField[] {
-  return [...fields].sort((a, b) => a.name.localeCompare(b.name));
-}
+// `groupFieldsBySection` lives in [./group-fields.ts] (pure module,
+// testable without DOM/React per #78).
 
 function pickEnumValues(schema: JsonSchema): string[] {
   if (!Array.isArray(schema.enum)) return [];

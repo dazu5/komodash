@@ -60,6 +60,12 @@ pub struct FieldOverlay {
     /// release.
     #[serde(default)]
     pub widget: Option<String>,
+    /// When `true`, the SchemaEditor drops this field entirely (issue
+    /// #78). Used for upstream-deprecated fields and arrays that have
+    /// a dedicated editor elsewhere (App Rules) so hand-editing can't
+    /// corrupt parallel surfaces.
+    #[serde(default)]
+    pub hidden: bool,
 }
 
 impl FieldCatalog {
@@ -177,6 +183,43 @@ mod tests {
                 section_ids.contains(overlay.section.as_str()),
                 "bar field {path:?} references unknown section {:?}",
                 overlay.section
+            );
+        }
+    }
+
+    #[test]
+    fn deprecated_and_app_rules_fields_are_hidden() {
+        // Per #78: fields upstream-deprecated by komorebi, and arrays
+        // owned by the App Rules page, must carry `hidden: true` in
+        // the catalog. The SchemaEditor refuses to render them so the
+        // user can't corrupt parallel editing surfaces or discover
+        // dead-end deprecated knobs.
+        let catalog = FieldCatalog::bundled();
+        let must_be_hidden = [
+            // Deprecated upstream
+            "border_z_order",
+            "focus_follows_mouse",
+            "invisible_borders",
+            // App Rules-owned
+            "ignore_rules",
+            "floating_applications",
+            "manage_rules",
+            "layered_applications",
+            "object_name_change_applications",
+            "tray_and_multi_window_applications",
+            "remove_titlebar_applications",
+            "slow_application_identifiers",
+            "transparency_ignore_rules",
+            "border_overflow_applications",
+        ];
+        for field in must_be_hidden {
+            let overlay = catalog
+                .fields
+                .get(field)
+                .unwrap_or_else(|| panic!("field {field:?} missing from catalog"));
+            assert!(
+                overlay.hidden,
+                "field {field:?} must be hidden — see #78"
             );
         }
     }

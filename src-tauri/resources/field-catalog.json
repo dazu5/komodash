@@ -71,9 +71,10 @@
     },
     "focus_follows_mouse": {
       "label": "Focus follows mouse",
-      "description": "Change focus to whatever window the mouse hovers over.",
+      "description": "DEPRECATED upstream — use the masir project instead.",
       "section": "focus",
-      "widget": "select"
+      "widget": "select",
+      "hidden": true
     },
     "cross_monitor_move_behaviour": {
       "label": "Cross-monitor move behaviour",
@@ -134,6 +135,78 @@
       "description": "Colour palette applied to the bar, stack indicator, and border colours when no per-state override is set.",
       "section": "borders",
       "widget": "object"
+    },
+    "border_z_order": {
+      "label": "Border z-order",
+      "description": "DEPRECATED upstream from komorebi v0.1.31 — no longer required.",
+      "section": "borders",
+      "hidden": true
+    },
+    "invisible_borders": {
+      "label": "Invisible borders",
+      "description": "DEPRECATED upstream from komorebi v0.1.22 — no longer required.",
+      "section": "borders",
+      "hidden": true
+    },
+    "ignore_rules": {
+      "label": "Ignore rules",
+      "description": "Edit on the App Rules page — hand-editing here would create parallel sources of truth.",
+      "section": "behaviour",
+      "hidden": true
+    },
+    "floating_applications": {
+      "label": "Floating apps",
+      "description": "Edit on the App Rules page — hand-editing here would create parallel sources of truth.",
+      "section": "behaviour",
+      "hidden": true
+    },
+    "manage_rules": {
+      "label": "Manage rules",
+      "description": "Edit on the App Rules page — hand-editing here would create parallel sources of truth.",
+      "section": "behaviour",
+      "hidden": true
+    },
+    "layered_applications": {
+      "label": "Layered apps",
+      "description": "Power-user app-targeting list. Edit komorebi.json directly if you need it.",
+      "section": "behaviour",
+      "hidden": true
+    },
+    "object_name_change_applications": {
+      "label": "Object-name-change apps",
+      "description": "Power-user app-targeting list. Edit komorebi.json directly if you need it.",
+      "section": "behaviour",
+      "hidden": true
+    },
+    "tray_and_multi_window_applications": {
+      "label": "Tray / multi-window apps",
+      "description": "Power-user app-targeting list. Edit komorebi.json directly if you need it.",
+      "section": "behaviour",
+      "hidden": true
+    },
+    "remove_titlebar_applications": {
+      "label": "Remove-titlebar apps",
+      "description": "Power-user app-targeting list. Edit komorebi.json directly if you need it.",
+      "section": "behaviour",
+      "hidden": true
+    },
+    "slow_application_identifiers": {
+      "label": "Slow-app identifiers",
+      "description": "Power-user app-targeting list. Edit komorebi.json directly if you need it.",
+      "section": "behaviour",
+      "hidden": true
+    },
+    "transparency_ignore_rules": {
+      "label": "Transparency-ignore rules",
+      "description": "Power-user app-targeting list. Edit komorebi.json directly if you need it.",
+      "section": "behaviour",
+      "hidden": true
+    },
+    "border_overflow_applications": {
+      "label": "Border-overflow apps",
+      "description": "Power-user app-targeting list. Edit komorebi.json directly if you need it.",
+      "section": "borders",
+      "hidden": true
     }
   }
 }
