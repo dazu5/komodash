@@ -403,6 +403,23 @@ fn write_static_config_merged(
         .map_err(stringify_err)
 }
 
+/// Merged save for the **bar configuration** (issue #56). Mirrors the
+/// static config's merged-save: every top-level field the editor didn't
+/// touch is preserved on disk so the bar editor can't strip
+/// `komorebi-bar.exe`'s required fields (widgets, theme, fonts, etc.).
+#[tauri::command]
+fn write_bar_config_merged(
+    edits: serde_json::Value,
+    touched_fields: Vec<String>,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let path = config_path_for(&state, ConfigKind::Bar).map_err(stringify_err)?;
+    let backups = backups_root().map_err(stringify_err)?;
+    let set: HashSet<String> = touched_fields.into_iter().collect();
+    managed_config::write_bar_config_merged(&path, &edits, &set, &backups)
+        .map_err(stringify_err)
+}
+
 /// Return the list of top-level keys in the current Static configuration
 /// that aren't declared in the JSON Schema. Backs the "your current
 /// Komorebi version doesn't recognise these fields — they will be
@@ -821,6 +838,7 @@ pub fn run() {
             get_field_catalog,
             get_reserved_chords,
             write_static_config_merged,
+            write_bar_config_merged,
             detect_unknown_fields,
             upgrade_komorebi_via_winget,
             upgrade_komorebi_via_scoop,

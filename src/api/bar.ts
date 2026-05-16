@@ -56,3 +56,21 @@ export async function resetMonitorWorkAreaOffset(
 ): Promise<void> {
   await invoke<void>("reset_monitor_work_area_offset", { monitorIndex });
 }
+
+/**
+ * Merged save for the bar configuration (issue #56). The editor passes
+ * its current working buffer (`edits`) plus the **set of top-level keys
+ * it actually touched** (`touchedFields`); every other top-level key on
+ * disk is preserved verbatim. Prevents the bar editor from stripping
+ * `komorebi-bar.exe`'s required fields (widgets, theme, fonts, etc.)
+ * just by editing the monitor block.
+ */
+export async function writeBarConfigMerged(
+  edits: Record<string, unknown>,
+  touchedFields: string[],
+): Promise<void> {
+  await invoke<void>("write_bar_config_merged", {
+    edits,
+    touchedFields,
+  });
+}
