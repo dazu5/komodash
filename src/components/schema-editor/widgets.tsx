@@ -10,6 +10,11 @@ import {
 
 import { cn } from "@/lib/utils";
 import {
+  parseAnimationConfig,
+  setAnimationField,
+  type SimpleAnimationConfig,
+} from "@/lib/animation";
+import {
   BORDER_COLOUR_STATES,
   parseBorderColours,
   setBorderColour,
@@ -984,6 +989,100 @@ const BORDER_COLOUR_LABELS: Record<BorderColourState, string> = {
   unfocused: "Unfocused",
   unfocused_locked: "Unfocused + locked",
 };
+
+/**
+ * Structured editor for the `animation` field (issue #76). Renders
+ * four controls inline: enabled toggle, duration slider (0–1000 ms),
+ * style dropdown (sourced from schema enum), fps input.
+ *
+ * Komorebi's schema allows each field to be either a primitive OR a
+ * per-prefix object (`{movement: ..., transparency: ...}`) for fine-
+ * grained per-animation control. When the on-disk value uses the
+ * per-prefix form, we render a notice and decline to edit so the
+ * widget doesn't flatten a power user's overrides.
+ */
+export function AnimationWidget({
+  value,
+  readonly,
+  animationStyles,
+  onChange,
+}: {
+  value: unknown;
+  readonly: boolean;
+  /** AnimationStyle enum extracted from the root schema by the
+   *  SchemaEditor. Falls back to a built-in list when the schema
+   *  doesn't ship it. */
+  animationStyles: string[];
+  onChange?: (next: unknown) => void;
+}) {
+  const parsed = parseAnimationConfig(value);
+
+  if (parsed.advanced) {
+    return (
+      <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
+        Advanced per-animation config detected (one or more fields use
+        the <code>{`{movement, transparency}`}</code> form). Komodash's
+        simple editor would flatten this — edit komorebi.json directly
+        if you need per-animation overrides.
+      </div>
+    );
+  }
+
+  const emit = <K extends keyof SimpleAnimationConfig>(
+    key: K,
+    next: SimpleAnimationConfig[K],
+  ) => onChange?.(setAnimationField(parsed.simple, key, next));
+
+  const styleChoices = animationStyles.includes(parsed.simple.style)
+    ? animationStyles
+    : [parsed.simple.style, ...animationStyles];
+
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr_12rem_6rem] gap-3 items-center">
+      <BooleanWidget
+        value={parsed.simple.enabled}
+        readonly={readonly}
+        onChange={(v) => emit("enabled", v)}
+      />
+      <div className="flex items-center gap-2">
+        <input
+          type="range"
+          min={0}
+          max={1000}
+          step={10}
+          className="flex-1"
+          value={parsed.simple.duration}
+          disabled={readonly}
+          onChange={(e) => emit("duration", Number(e.target.value))}
+        />
+        <code className="text-xs tabular-nums text-muted-foreground w-14 text-right">
+          {parsed.simple.duration} ms
+        </code>
+      </div>
+      <select
+        className={baseInput}
+        value={parsed.simple.style}
+        disabled={readonly}
+        onChange={(e) => emit("style", e.target.value)}
+      >
+        {styleChoices.map((s) => (
+          <option key={s} value={s}>
+            {s}
+          </option>
+        ))}
+      </select>
+      <input
+        type="number"
+        min={1}
+        max={240}
+        className={baseInput}
+        value={parsed.simple.fps}
+        disabled={readonly}
+        onChange={(e) => emit("fps", Number(e.target.value))}
+      />
+    </div>
+  );
+}
 
 export function UnknownWidget({ value }: { value: unknown }) {
   if (value === undefined || value === null) {
