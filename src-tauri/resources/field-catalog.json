@@ -129,12 +129,6 @@
       "section": "layouts",
       "widget": "workspaces"
     },
-    "applications": {
-      "label": "App Rules",
-      "description": "Ignore / float / workspace-pin behaviour per application. Edit on the App Rules page.",
-      "section": "behaviour",
-      "widget": "applications"
-    },
     "theme": {
       "label": "Theme",
       "description": "Colour palette applied to the bar, stack indicator, and border colours when no per-state override is set.",

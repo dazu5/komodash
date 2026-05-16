@@ -182,6 +182,21 @@ mod tests {
     }
 
     #[test]
+    fn no_dead_applications_overlay() {
+        // Regression for #79: the catalog used to declare an
+        // `applications` overlay, but the Komorebi static-config schema
+        // has no top-level field by that name (it's `floating_applications`,
+        // `manage_rules`, etc., individually). The orphan entry pointed
+        // at a widget key that was never registered, confusing readers.
+        let catalog = FieldCatalog::bundled();
+        assert!(
+            !catalog.fields.contains_key("applications"),
+            "field-catalog.json must not declare an 'applications' overlay — \
+             the schema has no such field, the entry is dead"
+        );
+    }
+
+    #[test]
     fn families_required_by_issue_11_are_present() {
         // The issue body explicitly names these as the seed coverage.
         let catalog = FieldCatalog::bundled();
