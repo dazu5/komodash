@@ -778,6 +778,127 @@ fn stringify_err<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
 }
 
+// ---- Issue #23: First-run wizard -------------------------------------------
+
+/// The four detection signals the first-run wizard FSM consumes. All
+/// four → wizard skips and the user lands on the Dashboard.
+#[derive(serde::Serialize)]
+struct FirstRunState {
+    installed: bool,
+    #[serde(rename = "configExists")]
+    config_exists: bool,
+    running: bool,
+    #[serde(rename = "autostartEnabled")]
+    autostart_enabled: bool,
+}
+
+/// Run all four wizard preconditions in one shot. Called on mount and
+/// after every successful action step so the FSM can advance.
+#[tauri::command]
+fn detect_first_run_state(state: tauri::State<'_, AppState>) -> FirstRunState {
+    let installed = state.komorebic.discover().is_some();
+    let config_exists = state
+        .komorebic
+        .static_config_path()
+        .ok()
+        .map(|p| p.exists())
+        .unwrap_or(false);
+    let running = state.komorebic.is_running();
+    let autostart_enabled = autostart_shortcut_path()
+        .map(|p| p.exists())
+        .unwrap_or(false);
+    FirstRunState {
+        installed,
+        config_exists,
+        running,
+        autostart_enabled,
+    }
+}
+
+/// `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\komorebi.lnk`.
+/// Komorebi's `enable-autostart` plants a shortcut here; we detect its
+/// presence to answer "is autostart on?".
+fn autostart_shortcut_path() -> Option<PathBuf> {
+    let roaming = dirs::data_dir()?;
+    Some(
+        roaming
+            .join("Microsoft")
+            .join("Windows")
+            .join("Start Menu")
+            .join("Programs")
+            .join("Startup")
+            .join("komorebi.lnk"),
+    )
+}
+
+/// Bundled starter config (ADR-0010). Lives at
+/// `src-tauri/resources/starter-config.json`. Re-built at compile
+/// time via `include_str!` so we ship a single binary.
+const STARTER_CONFIG: &str = include_str!("../resources/starter-config.json");
+
+/// Write the bundled starter config to the canonical Static config
+/// path. Used by the first-run wizard's `create_config` step. Refuses
+/// to overwrite an existing file — the wizard only invokes this when
+/// `detect_first_run_state.configExists` is false.
+#[tauri::command]
+fn write_starter_config(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let path = state
+        .komorebic
+        .static_config_path()
+        .map_err(stringify_err)?;
+    if path.exists() {
+        return Err(format!(
+            "refusing to overwrite existing config at {}",
+            path.display()
+        ));
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(stringify_err)?;
+    }
+    std::fs::write(&path, STARTER_CONFIG).map_err(stringify_err)?;
+    Ok(())
+}
+
+/// Run `komorebic enable-autostart` to plant the Startup-folder
+/// shortcut so Komorebi launches on login.
+#[tauri::command]
+async fn enable_autostart(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let client = state.komorebic.clone();
+    tokio::task::spawn_blocking(move || run_komorebic_subcommand(client.as_ref(), "enable-autostart"))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+/// Run `komorebic disable-autostart`. Symmetric to [`enable_autostart`].
+#[tauri::command]
+async fn disable_autostart(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let client = state.komorebic.clone();
+    tokio::task::spawn_blocking(move || run_komorebic_subcommand(client.as_ref(), "disable-autostart"))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+fn run_komorebic_subcommand(
+    client: &dyn Komorebic,
+    subcommand: &str,
+) -> anyhow::Result<()> {
+    let info = client
+        .discover()
+        .ok_or_else(|| anyhow::anyhow!("komorebic.exe could not be located"))?;
+    let output = std::process::Command::new(&info.path)
+        .arg(subcommand)
+        .output()?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "komorebic {subcommand} failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -911,6 +1032,10 @@ pub fn run() {
             reset_monitor_work_area_offset,
             fetch_community_catalog,
             read_community_catalog,
+            detect_first_run_state,
+            write_starter_config,
+            enable_autostart,
+            disable_autostart,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
