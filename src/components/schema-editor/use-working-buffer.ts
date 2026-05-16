@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { applyStaticConfig, type ApplyError } from "@/api/apply";
 import { writeConfig } from "@/api/config";
+import { useUndoStack } from "@/stores/undo-stack";
 
 /**
  * Live-apply orchestrator for the Static configuration (issue #18, per
@@ -36,6 +37,7 @@ export function useWorkingBuffer({
   const [error, setError] = useState<ApplyError | null>(null);
   const [inFlight, setInFlight] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pushUndo = useUndoStack((s) => s.apply);
 
   // Re-seed when the initial value arrives or refreshes from disk.
   useEffect(() => {
@@ -79,17 +81,28 @@ export function useWorkingBuffer({
   const setField = useCallback(
     (key: string, value: unknown) => {
       setBuffer((prev) => {
+        const before = prev ? prev[key] : undefined;
         const next = { ...(prev ?? {}), [key]: value };
         if (debounceRef.current !== null) {
           clearTimeout(debounceRef.current);
         }
         debounceRef.current = setTimeout(() => {
+          // Push to the global undo stack BEFORE flushing (the stack
+          // handler is the one that does the write+apply now). The
+          // undo coalescing window collapses rapid same-key edits
+          // into a single Ctrl+Z entry per #21.
+          void pushUndo({
+            kind: "static-live-apply",
+            path: key,
+            before,
+            after: value,
+          });
           void flush(next);
         }, 300);
         return next;
       });
     },
-    [flush],
+    [flush, pushUndo],
   );
 
   return {
