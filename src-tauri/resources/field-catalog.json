@@ -37,7 +37,7 @@
       "label": "Border colours",
       "description": "Per-state colours: focused window, unfocused window, monocle layout, stack indicator.",
       "section": "borders",
-      "widget": "object"
+      "widget": "border-colours"
     },
     "animation": {
       "label": "Animation settings",

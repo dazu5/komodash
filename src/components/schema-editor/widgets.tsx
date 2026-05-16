@@ -10,6 +10,12 @@ import {
 
 import { cn } from "@/lib/utils";
 import {
+  BORDER_COLOUR_STATES,
+  parseBorderColours,
+  setBorderColour,
+  type BorderColourState,
+} from "@/lib/border-colours";
+import {
   addWorkspace,
   createMonitors,
   parseMonitors,
@@ -878,6 +884,106 @@ function WorkspaceRow({
     </li>
   );
 }
+
+/**
+ * Structured editor for `border_colours` (issue #75). Six labeled
+ * colour pickers driven by `<input type="color">`, one per
+ * `BorderColourState`. Hex swatch + value display next to each. Used
+ * to be a JSON textarea — per the [[no-json-as-ux]] principle, the
+ * highest-visibility setting on first install should not require
+ * editing JSON.
+ *
+ * Emits the on-disk shape `{state: hex, …}` with only set states
+ * present, so an unset state doesn't write `null` into the config
+ * (Komorebi tolerates null but the absence is cleaner).
+ */
+export function BorderColoursWidget({
+  value,
+  readonly,
+  onChange,
+}: {
+  value: unknown;
+  readonly: boolean;
+  onChange?: (next: unknown) => void;
+}) {
+  const colours = parseBorderColours(value);
+  const emit = (state: BorderColourState, next: string | null) => {
+    const merged = setBorderColour(colours, state, next);
+    const stripped: Record<string, string> = {};
+    for (const k of BORDER_COLOUR_STATES) {
+      const v = merged[k];
+      if (typeof v === "string") stripped[k] = v;
+    }
+    onChange?.(stripped);
+  };
+
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+      {BORDER_COLOUR_STATES.map((state) => (
+        <BorderColourRow
+          key={state}
+          state={state}
+          hex={colours[state]}
+          readonly={readonly}
+          onChange={(next) => emit(state, next)}
+        />
+      ))}
+    </div>
+  );
+}
+
+function BorderColourRow({
+  state,
+  hex,
+  readonly,
+  onChange,
+}: {
+  state: BorderColourState;
+  hex: string | null;
+  readonly: boolean;
+  onChange: (next: string | null) => void;
+}) {
+  const id = useId();
+  const display = hex ?? "#000000";
+  return (
+    <div className="flex items-center gap-2 rounded-md border border-border bg-secondary/30 px-2 py-1.5">
+      <input
+        id={id}
+        type="color"
+        className="h-6 w-8 rounded border border-border bg-transparent cursor-pointer disabled:cursor-not-allowed"
+        value={display}
+        disabled={readonly}
+        onChange={(e) => onChange(e.target.value)}
+        aria-label={`${BORDER_COLOUR_LABELS[state]} colour picker`}
+      />
+      <label htmlFor={id} className="text-xs font-medium flex-1">
+        {BORDER_COLOUR_LABELS[state]}
+      </label>
+      <code className="text-xs text-muted-foreground tabular-nums">
+        {hex ?? "(unset)"}
+      </code>
+      {!readonly && hex !== null && (
+        <button
+          type="button"
+          onClick={() => onChange(null)}
+          title={`Clear ${BORDER_COLOUR_LABELS[state]}`}
+          className="text-muted-foreground hover:text-destructive transition-colors"
+        >
+          <X className="h-3 w-3" />
+        </button>
+      )}
+    </div>
+  );
+}
+
+const BORDER_COLOUR_LABELS: Record<BorderColourState, string> = {
+  single: "Single",
+  stack: "Stack",
+  monocle: "Monocle",
+  floating: "Floating",
+  unfocused: "Unfocused",
+  unfocused_locked: "Unfocused + locked",
+};
 
 export function UnknownWidget({ value }: { value: unknown }) {
   if (value === undefined || value === null) {
