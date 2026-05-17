@@ -12,6 +12,24 @@
 //! that Tauri's `#[command]` macro emits for async commands taking
 //! `tauri::State` arguments.
 
+/// Print to stderr only when the `KOMODASH_TRACE` env var is set.
+///
+/// Use for ad-hoc, dev-only visibility into multi-layer flows like
+/// the bar's apply pipeline. Not a replacement for `tracing::*`
+/// (those go to the rolling log file at `%LOCALAPPDATA%\komodash\
+/// logs\`). `dev_trace!` shows up in the user's `pnpm tauri dev`
+/// terminal, where they can paste it back into bug reports.
+///
+/// Documented in `CLAUDE.md` as the first step for any
+/// "X isn't working" investigation.
+macro_rules! dev_trace {
+    ($($arg:tt)*) => {
+        if std::env::var("KOMODASH_TRACE").is_ok() {
+            eprintln!($($arg)*);
+        }
+    };
+}
+
 pub mod apply_static;
 pub mod backup_store;
 pub mod bar_schema_cache;
@@ -520,27 +538,64 @@ fn get_bar_field_catalog() -> FieldCatalog {
 async fn apply_bar_config(state: tauri::State<'_, AppState>) -> Result<(), String> {
     let client = state.komorebic.clone();
     let path = client.bar_config_path().map_err(|e| e.to_string())?;
+    let static_path = client.static_config_path().ok();
     tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         // 1. Read the saved bar config so we know the target monitor
-        //    and offsets to apply directly.
+        //    + the bar geometry that drives the reservation.
         let raw = std::fs::read_to_string(&path).unwrap_or_default();
-        let target = parse_bar_monitor_target(&raw);
+        let parsed = parse_bar_geometry_and_target(&raw);
+
+        // 1a. Read the komorebi.json workspace inset (sum of
+        //     default_workspace_padding + default_container_padding)
+        //     so we can subtract it from the work-area top — see
+        //     `compute_bar_reservation` for the math. Both fields
+        //     contribute to the visible "bar to first window" gap;
+        //     without summing them we under-shrink work_area_top and
+        //     the bottom gap ends up bigger than the top gap.
+        let top_workspace_inset = static_path
+            .as_ref()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .as_deref()
+            .map(parse_top_workspace_inset)
+            .unwrap_or(0);
 
         // 2. Restart the bar — gives the user the visual relocation.
         client.restart_bar()?;
 
-        // 3. Push the work-area reservation directly. Best-effort: if
-        //    Komorebi isn't running, log and continue.
-        if let Some((idx, offset)) = target {
-            let _ = client.monitor_work_area_offset(
+        // 3. Compute the reservation from the SOLE source of truth
+        //    (`compute_bar_reservation`) and push via CLI. Bar geometry
+        //    inputs + per-monitor taskbar probe + container_padding go
+        //    in; canonical `MonitorWorkAreaOffset` comes out. No other
+        //    layer computes this independently any more.
+        if let Some((idx, geometry)) = parsed {
+            let reservation = compute_bar_reservation(geometry, idx, top_workspace_inset);
+            dev_trace!(
+                "[apply_bar_config] monitor={} geometry: height={} margin_top={} top_workspace_inset={} | reservation: top={} bottom={} left={} right={}",
                 idx,
-                offset.left,
-                offset.top,
-                offset.right,
-                offset.bottom,
+                geometry.height,
+                geometry.margin_top,
+                top_workspace_inset,
+                reservation.top,
+                reservation.bottom,
+                reservation.left,
+                reservation.right,
             );
+            let push = client.monitor_work_area_offset(
+                idx,
+                reservation.left,
+                reservation.top,
+                reservation.right,
+                reservation.bottom,
+            );
+            if let Err(e) = &push {
+                dev_trace!("[apply_bar_config] CLI push failed: {e}");
+            }
             // 4. Force a re-tile so existing windows reflow.
             let _ = client.retile();
+        } else {
+            dev_trace!(
+                "[apply_bar_config] could not parse bar geometry from bar config — skipping offset push"
+            );
         }
 
         Ok(())
@@ -550,38 +605,528 @@ async fn apply_bar_config(state: tauri::State<'_, AppState>) -> Result<(), Strin
     .map_err(|e| e.to_string())
 }
 
-/// Per-monitor work-area offset shape used in `komorebi.bar.json`.
-/// Defaults to zeros so an integer-only `monitor: N` config still
-/// produces a usable (no-reservation) tuple.
+/// Canonical work-area reservation Komodash pushes to Komorebi for the
+/// bar's target monitor. Each edge is independent — see CONTEXT.md's
+/// "Bar geometry" section for what each represents.
 #[derive(Debug, Default, Clone, Copy)]
-struct BarMonitorOffset {
+struct BarReservation {
     left: i32,
     top: i32,
     right: i32,
     bottom: i32,
 }
 
-/// Pull the bar's target monitor index + `work_area_offset` out of a
+/// The bar's painted geometry. Parsed from `komorebi.bar.json`,
+/// fed into [`compute_bar_reservation`] to derive the canonical
+/// `work_area_offset`. Decoupled from the reservation itself so that
+/// users edit geometry and Komodash derives the reservation — never
+/// the reverse.
+#[derive(Debug, Default, Clone, Copy)]
+struct BarGeometry {
+    height: i32,
+    margin_top: i32,
+    #[allow(dead_code)]
+    margin_bottom: i32,
+    #[allow(dead_code)]
+    margin_left: i32,
+    #[allow(dead_code)]
+    margin_right: i32,
+}
+
+/// Pull the bar's target monitor index + painted geometry out of a
 /// `komorebi.bar.json` blob. The `monitor` field is an anyOf union:
-/// either a bare integer index OR `{index, work_area_offset?}`.
-/// Returns `None` if the field is absent or unparseable.
-fn parse_bar_monitor_target(raw: &str) -> Option<(u32, BarMonitorOffset)> {
+/// either a bare integer index OR `{index, ...}`. Any
+/// `monitor.work_area_offset` in the file is **ignored** — see
+/// [`compute_bar_reservation`] for the SSOT explanation.
+fn parse_bar_geometry_and_target(raw: &str) -> Option<(u32, BarGeometry)> {
     let v: serde_json::Value = serde_json::from_str(raw).ok()?;
-    let m = v.get("monitor")?;
-    if let Some(i) = m.as_u64() {
-        return Some((i as u32, BarMonitorOffset::default()));
+
+    let monitor = v.get("monitor")?;
+    let idx = if let Some(i) = monitor.as_u64() {
+        i as u32
+    } else if let Some(obj) = monitor.as_object() {
+        obj.get("index")?.as_u64()? as u32
+    } else {
+        return None;
+    };
+
+    let height = v.get("height").and_then(|h| h.as_f64()).unwrap_or(50.0) as i32;
+    let margin = v.get("margin").and_then(|m| m.as_object());
+    let read_margin = |side: &str| -> i32 {
+        margin
+            .and_then(|o| o.get(side))
+            .and_then(|t| t.as_i64())
+            .unwrap_or(0) as i32
+    };
+
+    Some((
+        idx,
+        BarGeometry {
+            height,
+            margin_top: read_margin("top"),
+            margin_bottom: read_margin("bottom"),
+            margin_left: read_margin("left"),
+            margin_right: read_margin("right"),
+        },
+    ))
+}
+
+/// **Sole source of truth** for the bar's `work_area_offset`.
+///
+/// Inputs: bar geometry (height + margins), the target monitor's
+/// index, and komorebi's `container_padding` (read from komorebi.
+/// json). Output: per-edge pixel reservations Komorebi keeps clear
+/// when tiling workspaces.
+///
+/// # Two Komorebi behaviours we have to compensate for
+///
+/// **1. Asymmetric offset interpretation** (`komorebi/src/workspace.
+/// rs:633-636`):
+/// ```text
+/// with_offset.top    += offset.top
+/// with_offset.bottom -= offset.bottom   (here `bottom` is HEIGHT)
+/// ```
+/// `offset.top` *shifts* the work area down; `offset.bottom` *shrinks*
+/// its height. With asymmetric `{top: N, bottom: 0}` the work area
+/// extends N px BEYOND the monitor's actual bottom and windows render
+/// off-screen. So `bottom` must be at least `top` to keep the work
+/// area within the visible monitor.
+///
+/// **2. Container padding insets windows from the work-area edges.**
+/// The visible "bar bottom → first window top" gap is therefore
+/// `(work_area_top - bar_bottom) + container_padding`, NOT just the
+/// reservation difference. Without compensating for it the bottom
+/// gap is always `container_padding` px bigger than the top gap.
+///
+/// # Formula
+///
+/// Let `mt = margin_top`, `h = height`, `cp = container_padding`,
+/// `tc = taskbar_clearance`. The visible top gap is `mt`; we want
+/// the visible bottom gap to also equal `mt`. The visible bottom
+/// gap is `(top - mt - h) + cp`, so we need `top = 2*mt + h - cp`.
+///
+/// Clamp at `mt + h` to prevent windows from overlapping the bar
+/// (only matters when `cp > mt`; in that case the gaps can't be
+/// fully matched — visible bottom gap will be `cp`, visible top
+/// gap stays `mt`).
+///
+/// ```text
+/// top    = max(2*mt + h - cp, mt + h)
+/// bottom = top + tc        // keeps work area on-screen + taskbar-safe
+/// left   = 0
+/// right  = 0
+/// ```
+/// `top_workspace_inset` is the sum of `default_workspace_padding` +
+/// `default_container_padding` from komorebi.json — the pixels
+/// komorebi insets the first window from the work-area's top edge.
+/// See [`parse_top_workspace_inset`].
+fn compute_bar_reservation(
+    geometry: BarGeometry,
+    monitor_index: u32,
+    top_workspace_inset: i32,
+) -> BarReservation {
+    let mt = geometry.margin_top;
+    let h = geometry.height;
+    let inset = top_workspace_inset.max(0);
+    let target_top = 2 * mt + h - inset;
+    let min_top = mt + h; // window can't overlap the bar
+    let top = target_top.max(min_top);
+    let taskbar_clearance = probe_taskbar_height_for_monitor(monitor_index).unwrap_or(0);
+    let bottom = top + taskbar_clearance;
+    BarReservation {
+        left: 0,
+        top,
+        right: 0,
+        bottom,
     }
-    if let Some(obj) = m.as_object() {
-        let idx = obj.get("index")?.as_u64()? as u32;
-        let mut off = BarMonitorOffset::default();
-        if let Some(o) = obj.get("work_area_offset").and_then(|v| v.as_object()) {
-            off.left = o.get("left").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-            off.top = o.get("top").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-            off.right = o.get("right").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-            off.bottom = o.get("bottom").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+}
+
+/// Compute the **total pixel inset** komorebi adds between a workspace
+/// edge and the first window edge along the top side. That inset is
+/// what makes the bar-to-window gap larger than the bar's own
+/// `margin.top` — see CONTEXT.md → Bar geometry.
+///
+/// Komorebi composes two pad fields here:
+/// - `default_workspace_padding` — workspace edge → container edge
+/// - `default_container_padding` — container edge → window edge
+///
+/// Both are top-level in `komorebi.json`. They add up for the visible
+/// top inset; same on the other three sides. Per-workspace overrides
+/// exist but we don't read them (would need to know the active
+/// workspace at apply time and the user's static config rarely sets
+/// them per-workspace anyway).
+///
+/// **Common mistake** (and the one that bit us): the JSON field at
+/// the top level is `default_container_padding`, NOT bare
+/// `container_padding`. The earlier version of this function looked
+/// for `container_padding` and silently returned 0 for every real
+/// config, defeating the gap-match logic in
+/// [`compute_bar_reservation`].
+fn parse_top_workspace_inset(raw: &str) -> i32 {
+    let parsed = serde_json::from_str::<serde_json::Value>(raw).ok();
+    let read = |key: &str| -> i32 {
+        parsed
+            .as_ref()
+            .and_then(|v| v.get(key))
+            .and_then(|v| v.as_i64())
+            .map(|n| n as i32)
+            .unwrap_or(0)
+            .max(0)
+    };
+    read("default_workspace_padding") + read("default_container_padding")
+}
+
+/// Probe the visible Windows taskbar height for a specific monitor.
+///
+/// Strategy:
+/// 1. Enumerate all monitors via `EnumDisplayMonitors`.
+/// 2. Look up the HMONITOR at the requested index (assumes
+///    enumeration order matches Komorebi's monitor index — true for
+///    typical 1–2 monitor setups, may not be for unusual layouts).
+/// 3. Call `GetMonitorInfoW`; taskbar height = `rcMonitor.bottom −
+///    rcWork.bottom` for a bottom-anchored taskbar.
+/// 4. **Fallback** — if step 2 returns nothing OR step 3 says 0,
+///    take the MAX taskbar height across ALL monitors. This handles
+///    the index-ordering mismatch case (the bar's actual monitor IS
+///    one of the enumerated monitors, just at a different index) at
+///    the cost of slightly over-reserving on a monitor whose actual
+///    taskbar is smaller. Better visible-gap-too-big than windows-
+///    hidden-under-taskbar.
+///
+/// Also emits `dev_trace!` lines with each monitor's reported size
+/// + taskbar so multi-monitor setups can verify the right one was
+/// picked.
+/// Probe the Windows taskbar height by finding its window directly.
+///
+/// Returns the taskbar's pixel height regardless of auto-hide state —
+/// the window exists with its full real height even when hidden.
+#[cfg(windows)]
+fn probe_taskbar_height_via_window() -> Option<i32> {
+    use windows_sys::Win32::Foundation::RECT;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{FindWindowW, GetWindowRect};
+
+    let class_name: Vec<u16> = "Shell_TrayWnd\0".encode_utf16().collect();
+    // SAFETY: null-terminated UTF-16 class name; null window-name OK.
+    let hwnd = unsafe { FindWindowW(class_name.as_ptr(), std::ptr::null()) };
+    if hwnd.is_null() {
+        return None;
+    }
+    let mut rect: RECT = unsafe { std::mem::zeroed() };
+    // SAFETY: hwnd is non-null per the check above; rect is owned here.
+    let ok = unsafe { GetWindowRect(hwnd, &mut rect) };
+    if ok == 0 {
+        return None;
+    }
+    Some((rect.bottom - rect.top).max(0))
+}
+
+#[cfg(not(windows))]
+fn probe_taskbar_height_via_window() -> Option<i32> {
+    None
+}
+
+/// Returns `true` if the Windows taskbar is currently configured to
+/// auto-hide (slides off-screen unless the cursor approaches it).
+///
+/// Why we care: auto-hide users explicitly chose to recover the
+/// taskbar's pixels when it's hidden — reserving for it permanently
+/// defeats the point of auto-hide. So when this returns true we use
+/// `bottom = 0` and accept the brief content overlap during reveal.
+/// When false we reserve the taskbar's actual height to prevent
+/// permanent overlap with a visible taskbar.
+///
+/// Uses `SHAppBarMessage(ABM_GETSTATE)` — returns a bitfield where
+/// the `ABS_AUTOHIDE` bit (= 1) indicates auto-hide is enabled.
+#[cfg(windows)]
+fn taskbar_is_autohidden() -> bool {
+    use windows_sys::Win32::UI::Shell::{SHAppBarMessage, ABM_GETSTATE, APPBARDATA};
+
+    const ABS_AUTOHIDE: usize = 0x0000_0001;
+
+    let mut data: APPBARDATA = unsafe { std::mem::zeroed() };
+    data.cbSize = std::mem::size_of::<APPBARDATA>() as u32;
+    // SAFETY: SHAppBarMessage with ABM_GETSTATE returns a bitfield
+    // (state) and only reads from APPBARDATA; cbSize is set.
+    let state = unsafe { SHAppBarMessage(ABM_GETSTATE, &mut data) } as usize;
+    (state & ABS_AUTOHIDE) != 0
+}
+
+#[cfg(not(windows))]
+fn taskbar_is_autohidden() -> bool {
+    false
+}
+
+#[cfg(windows)]
+fn probe_taskbar_height_for_monitor(monitor_index: u32) -> Option<i32> {
+    use windows_sys::Win32::Foundation::{LPARAM, RECT};
+    use windows_sys::Win32::Graphics::Gdi::{
+        EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO,
+    };
+
+    // Auto-hide taskbar: user opted into recovering its pixels when
+    // hidden. Don't reserve — accept brief overlap during reveal.
+    // This MUST run before the rcMonitor/rcWork comparison below
+    // because an auto-hidden taskbar fools that check (rcWork ==
+    // rcMonitor when hidden) into thinking there's no taskbar at
+    // all, which would lead to a Shell_TrayWnd fallback reserving
+    // its full height — exactly the wasted-space outcome auto-hide
+    // is meant to prevent.
+    if taskbar_is_autohidden() {
+        dev_trace!(
+            "[probe_taskbar] taskbar is set to AUTO-HIDE — using bottom=0 to honor the user's recover-pixels choice"
+        );
+        return Some(0);
+    }
+
+    unsafe extern "system" fn collect(
+        hmon: HMONITOR,
+        _hdc: HDC,
+        _rect: *mut RECT,
+        lparam: LPARAM,
+    ) -> i32 {
+        // SAFETY: caller passes &mut Vec<HMONITOR> as LPARAM; we cast back.
+        let monitors = unsafe { &mut *(lparam as *mut Vec<HMONITOR>) };
+        monitors.push(hmon);
+        1
+    }
+
+    let mut monitors: Vec<HMONITOR> = Vec::new();
+    // SAFETY: EnumDisplayMonitors invokes `collect` synchronously for
+    // each monitor; the &mut Vec lifetime covers the call.
+    unsafe {
+        EnumDisplayMonitors(
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            Some(collect),
+            &mut monitors as *mut _ as LPARAM,
+        );
+    }
+
+    // Gather (width × height, taskbar_height) per enumerated monitor.
+    let info_for = |hmon: HMONITOR| -> Option<MONITORINFO> {
+        let mut info: MONITORINFO = unsafe { std::mem::zeroed() };
+        info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+        // SAFETY: hmon is from our enumeration; cbSize is set.
+        let ok = unsafe { GetMonitorInfoW(hmon, &mut info) };
+        (ok != 0).then_some(info)
+    };
+    let taskbar_height_for = |info: &MONITORINFO| -> i32 {
+        (info.rcMonitor.bottom - info.rcWork.bottom).max(0)
+    };
+
+    // Per-monitor trace for debugging Komorebi-vs-Win32 index mismatch.
+    for (i, hmon) in monitors.iter().copied().enumerate() {
+        if let Some(info) = info_for(hmon) {
+            let w = info.rcMonitor.right - info.rcMonitor.left;
+            let h = info.rcMonitor.bottom - info.rcMonitor.top;
+            let tb = taskbar_height_for(&info);
+            dev_trace!(
+                "[probe_taskbar] EnumDisplayMonitors[{i}] = {w}x{h}, taskbar={tb}px"
+            );
         }
-        return Some((idx, off));
     }
+
+    // Preferred: the HMONITOR at the requested index.
+    let preferred = monitors
+        .get(monitor_index as usize)
+        .copied()
+        .and_then(info_for)
+        .map(|info| taskbar_height_for(&info))
+        .unwrap_or(0);
+
+    if preferred > 0 {
+        dev_trace!(
+            "[probe_taskbar] using direct match for monitor {monitor_index}: {preferred}px"
+        );
+        return Some(preferred);
+    }
+
+    // Fallback: take the max across all monitors. Conservative —
+    // over-reserves on a monitor with a smaller taskbar, but that's
+    // visible-gap-too-big rather than windows-under-taskbar.
+    let max_across = monitors
+        .iter()
+        .copied()
+        .filter_map(info_for)
+        .map(|info| taskbar_height_for(&info))
+        .max()
+        .unwrap_or(0);
+
+    if max_across > 0 {
+        dev_trace!(
+            "[probe_taskbar] direct match was 0; falling back to MAX across monitors: {max_across}px"
+        );
+        return Some(max_across);
+    }
+
+    // Last-resort fallback: query the taskbar's actual HWND via
+    // FindWindowW("Shell_TrayWnd") + GetWindowRect. This works even
+    // when the taskbar is auto-hidden — the window still exists at
+    // its real size, Windows just doesn't compose it onto the screen.
+    // Without this branch, users with auto-hide taskbars would get
+    // bottom=0 and their bottom row of windows would get obscured
+    // every time the taskbar reveals itself on hover.
+    if let Some(h) = probe_taskbar_height_via_window().filter(|h| *h > 0) {
+        dev_trace!(
+            "[probe_taskbar] rcWork = rcMonitor on every monitor (taskbar likely auto-hidden); using Shell_TrayWnd window height: {h}px"
+        );
+        return Some(h);
+    }
+
+    dev_trace!(
+        "[probe_taskbar] no taskbar detected on any monitor and Shell_TrayWnd query returned nothing — pushing bottom=0"
+    );
+    Some(0)
+}
+
+#[cfg(not(windows))]
+fn probe_taskbar_height_for_monitor(_monitor_index: u32) -> Option<i32> {
+    None
+}
+
+/// Per-monitor geometry, queried from Win32 directly (NOT from
+/// komorebi's snapshot). Single source of truth for bar positioning
+/// during monitor switches — komorebi's snapshot drops monitor info
+/// while komorebi-bar restarts to move, so anything that depends on
+/// the snapshot is unreliable during exactly the moment we need it.
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+struct MonitorGeometry {
+    left: i32,
+    top: i32,
+    width: i32,
+    height: i32,
+    /// DPI scale (1.0 = 96 DPI, 1.25 = 120 DPI, ...).
+    scale: f32,
+}
+
+/// Read the bounding rect + DPI scale of the monitor at the given
+/// Win32 enumeration index. Returns `None` if the index is out of
+/// bounds or any Win32 call fails.
+///
+/// **Caveat**: Win32's `EnumDisplayMonitors` order isn't guaranteed
+/// to match Komorebi's monitor index. For typical 1–2 monitor setups
+/// they agree; for unusual layouts the user may need to adjust the
+/// bar's monitor field manually. This is still preferable to reading
+/// from the snapshot — snapshot data is the right INDEX but unreliable
+/// CONTENT, Win32 is reliable content with index that USUALLY matches.
+#[tauri::command]
+fn get_monitor_geometry(index: u32) -> Option<MonitorGeometry> {
+    probe_monitor_geometry(index)
+}
+
+#[cfg(windows)]
+fn probe_monitor_geometry(index: u32) -> Option<MonitorGeometry> {
+    use windows_sys::Win32::Foundation::{LPARAM, RECT};
+    use windows_sys::Win32::Graphics::Gdi::{
+        EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO,
+    };
+    use windows_sys::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
+
+    unsafe extern "system" fn collect(
+        hmon: HMONITOR,
+        _hdc: HDC,
+        _rect: *mut RECT,
+        lparam: LPARAM,
+    ) -> i32 {
+        let monitors = unsafe { &mut *(lparam as *mut Vec<HMONITOR>) };
+        monitors.push(hmon);
+        1
+    }
+
+    let mut monitors: Vec<HMONITOR> = Vec::new();
+    // SAFETY: EnumDisplayMonitors invokes the callback synchronously.
+    unsafe {
+        EnumDisplayMonitors(
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            Some(collect),
+            &mut monitors as *mut _ as LPARAM,
+        );
+    }
+    let hmon = monitors.get(index as usize).copied()?;
+
+    let mut info: MONITORINFO = unsafe { std::mem::zeroed() };
+    info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+    // SAFETY: hmon from EnumDisplayMonitors, info has cbSize set.
+    let ok = unsafe { GetMonitorInfoW(hmon, &mut info) };
+    if ok == 0 {
+        return None;
+    }
+
+    let mut dpi_x: u32 = 96;
+    let mut dpi_y: u32 = 96;
+    // SAFETY: hmon non-null per check above; dpi_x/y stack-owned.
+    let hr = unsafe { GetDpiForMonitor(hmon, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y) };
+    let scale = if hr == 0 {
+        (dpi_x as f32) / 96.0
+    } else {
+        1.0
+    };
+
+    Some(MonitorGeometry {
+        left: info.rcMonitor.left,
+        top: info.rcMonitor.top,
+        width: info.rcMonitor.right - info.rcMonitor.left,
+        height: info.rcMonitor.bottom - info.rcMonitor.top,
+        scale,
+    })
+}
+
+#[cfg(not(windows))]
+fn probe_monitor_geometry(_index: u32) -> Option<MonitorGeometry> {
+    None
+}
+
+/// Probe the DPI scale factor for the monitor that contains the
+/// given screen point. Returns `1.0` for 96-DPI (100%), `1.25` for
+/// 120-DPI (125%), etc. Defaults to `1.0` on any Win32 failure or
+/// non-Windows builds.
+///
+/// Why a point and not a Komorebi monitor index: `EnumDisplayMonitors`
+/// order isn't guaranteed to match Komorebi's monitor index (we hit
+/// this with the taskbar probe too — task #124). The frontend has
+/// each monitor's bounding rect from Komorebi's live state; passing
+/// the center point lets `MonitorFromPoint` return the exact HMONITOR
+/// regardless of how Win32 enumerates monitors. Unambiguous.
+///
+/// The DPI scale matters because the pill preset writes
+/// physical-pixel bar geometry (height, margin, sidePadding) that
+/// egui then renders content into using LOGICAL pixels (physical /
+/// scale). Without scaling, a 45-px bar on a 125% monitor has only
+/// 36 logical pixels of content room — cramped. Multiplying physical
+/// fields by the monitor's DPI scale gives egui the same logical
+/// budget on every monitor.
+#[tauri::command]
+#[allow(unused_variables)]
+fn get_monitor_dpi_scale(x: i32, y: i32) -> f32 {
+    probe_monitor_dpi_scale_at(x, y).unwrap_or(1.0)
+}
+
+#[cfg(windows)]
+fn probe_monitor_dpi_scale_at(x: i32, y: i32) -> Option<f32> {
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::Graphics::Gdi::{MonitorFromPoint, MONITOR_DEFAULTTONEAREST};
+    use windows_sys::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
+
+    let point = POINT { x, y };
+    // SAFETY: MonitorFromPoint is thread-safe and returns null on no-match;
+    // MONITOR_DEFAULTTONEAREST guarantees non-null for any valid point.
+    let hmon = unsafe { MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST) };
+    if hmon.is_null() {
+        return None;
+    }
+    let mut dpi_x: u32 = 96;
+    let mut dpi_y: u32 = 96;
+    // SAFETY: hmon is non-null per the check above; dpi_x/y are stack-owned.
+    let hr = unsafe { GetDpiForMonitor(hmon, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y) };
+    if hr != 0 {
+        return None;
+    }
+    Some((dpi_x as f32) / 96.0)
+}
+
+#[cfg(not(windows))]
+fn probe_monitor_dpi_scale_at(_x: i32, _y: i32) -> Option<f32> {
     None
 }
 
@@ -1258,6 +1803,8 @@ pub fn run() {
             get_bar_field_catalog,
             apply_bar_config,
             reset_monitor_work_area_offset,
+            get_monitor_dpi_scale,
+            get_monitor_geometry,
             fetch_community_catalog,
             read_community_catalog,
             detect_first_run_state,

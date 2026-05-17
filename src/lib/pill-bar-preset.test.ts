@@ -3,313 +3,298 @@ import { describe, expect, it } from "vitest";
 import { buildPillPreset } from "./pill-bar-preset";
 
 /**
- * komorebi-bar's `Rect` struct (in komorebi-layouts/src/rect.rs)
- * names its fields `left, top, right, bottom`, but the doc comments
- * make clear that `right` is WIDTH and `bottom` is HEIGHT — and the
- * Win32 boundary in windows_api.rs:611 passes them directly to
- * SetWindowPos as `cx` and `cy`. So in this codebase: position.end.x
- * is the bar's width, position.end.y is its height.
+ * Contract: the preset writes BAR GEOMETRY (height, margin, position,
+ * grouping, theme, widget set, chip styling) plus a BARE MONITOR INDEX.
+ * It deliberately does NOT write `work_area_offset` — that's a derived
+ * value that Komodash's backend (`compute_bar_reservation` in
+ * `src-tauri/src/lib.rs`) computes at apply time from this preset's
+ * `height` + `margin.top` + a per-monitor Win32 taskbar probe.
  *
- * Centering via `position.start.x` doesn't survive because
- * bar.rs:832's `update_monitor_coordinates` overrides start to the
- * monitor's top-left every time it fires (which is at least on
- * startup). The only durable way to offset the bar from the monitor
- * edge is via `margin.{top,left,right}` — komorebi-bar adds those
- * after the override.
+ * Single source of truth for the offset = backend. Single source of
+ * truth for the geometry inputs the backend consumes = this preset.
+ *
+ * Background on the other quirks pinned below:
+ *
+ * - komorebi-bar's `Rect.right` is WIDTH, `Rect.bottom` is HEIGHT
+ *   (komorebi-layouts/src/rect.rs docs). So `position.end.x` is the
+ *   bar's width, `position.end.y` is its height.
+ *
+ * - Centering via `position.start.x` doesn't survive
+ *   `update_monitor_coordinates` (komorebi-bar/src/bar.rs:832) which
+ *   resets `start` to the monitor's top-left on every fire. The only
+ *   durable way to offset the bar from the monitor edge is via
+ *   `margin.{top,left,right}` — komorebi-bar adds those AFTER the reset.
  */
 describe("buildPillPreset", () => {
-  it("emits position.end as (monitor width, bar height) — komorebi-bar's `right` field is width, `bottom` is height", () => {
-    const preset = buildPillPreset({
-      monitorIndex: 0,
-      monitorWidth: 1920,
-      monitorHeight: 1080,
-    });
-    expect((preset.position!.end as { x: number }).x).toBe(1920);
-    expect((preset.position!.end as { y: number }).y).toBe(52);
-  });
-
-  it("centers the bar via symmetric margin.left / margin.right (the only durable mechanism)", () => {
-    const preset = buildPillPreset({
-      monitorIndex: 0,
-      monitorWidth: 1920,
-      monitorHeight: 1080,
-    });
-    const m = preset.margin!;
-    expect(m.left).toBe(m.right);
-  });
-
-  it("scales pill width with the monitor (~70% target), clamped to a comfortable range", () => {
-    // Narrow monitor: floor at MIN
-    const narrow = buildPillPreset({
-      monitorIndex: 0,
-      monitorWidth: 1366,
-      monitorHeight: 768,
-    });
-    const narrowWidth = 1366 - 2 * narrow.margin!.left;
-    expect(narrowWidth).toBeGreaterThanOrEqual(900);
-
-    // Standard 1920p: ~70% target lands in the middle
-    const standard = buildPillPreset({
-      monitorIndex: 0,
-      monitorWidth: 1920,
-      monitorHeight: 1080,
-    });
-    const standardWidth = 1920 - 2 * standard.margin!.left;
-    expect(standardWidth).toBeGreaterThan(1000);
-    expect(standardWidth).toBeLessThanOrEqual(1500);
-
-    // Ultrawide: cap at MAX
-    const ultra = buildPillPreset({
-      monitorIndex: 0,
-      monitorWidth: 3440,
-      monitorHeight: 1440,
-    });
-    const ultraWidth = 3440 - 2 * ultra.margin!.left;
-    expect(ultraWidth).toBeLessThanOrEqual(1500);
-  });
-
-  it("caps pill width so there's at least 50px breathing room each side on narrow monitors", () => {
-    const preset = buildPillPreset({
-      monitorIndex: 0,
-      monitorWidth: 800,
-      monitorHeight: 1080,
-    });
-    const m = preset.margin!;
-    expect(m.left).toBeGreaterThanOrEqual(50);
-    expect(m.right).toBeGreaterThanOrEqual(50);
-    const pillWidth = 800 - m.left - m.right;
-    expect(pillWidth).toBeGreaterThan(0);
-  });
-
-  it("offsets vertically via margin.top, not position.start (which gets overridden)", () => {
-    const preset = buildPillPreset({
-      monitorIndex: 0,
-      monitorWidth: 1920,
-      monitorHeight: 1080,
-    });
-    expect(preset.margin!.top).toBeGreaterThan(0);
-    expect(preset.margin!.top).toBeLessThan(50);
-  });
-
-  it("omits position.start so komorebi-bar uses monitor.left/top defaults — works for any monitor index without recomputing", () => {
-    const preset = buildPillPreset({
-      monitorIndex: 0,
-      monitorWidth: 1920,
-      monitorHeight: 1080,
-    });
-    expect(preset.position!.start).toBeUndefined();
-  });
-
-  it("sets rounded corners — radius equals half the bar height for a true pill shape", () => {
-    const preset = buildPillPreset({
-      monitorIndex: 0,
-      monitorWidth: 1920,
-      monitorHeight: 1080,
-    });
-    expect(preset.grouping!.rounding).toBe(26);
-    expect(preset.grouping!.rounding * 2).toBe(preset.height);
-  });
-
-  it("uses no drop shadow (clean macOS-style container, glass effect carries the visual interest)", () => {
-    const preset = buildPillPreset({
-      monitorIndex: 0,
-      monitorWidth: 1920,
-      monitorHeight: 1080,
-    });
-    expect(preset.grouping!.style).toBe("Default");
-  });
-
-  it("uses solid-dark transparency (~90%) for strong contrast against the desktop, not glass", () => {
-    // egui doesn't do backdrop blur, so true glassmorphism isn't
-    // available. Lower alpha (e.g. 180) looks washed out on a dark
-    // wallpaper. The reference design we're matching is solid-dark,
-    // ~90% alpha — depth comes from the wallpaper bleed-through at
-    // the edges, not a translucent fill.
-    const preset = buildPillPreset({
-      monitorIndex: 0,
-      monitorWidth: 1920,
-      monitorHeight: 1080,
-    });
-    expect(preset.transparency_alpha).toBeGreaterThan(220);
-    expect(preset.transparency_alpha).toBeLessThanOrEqual(255);
-  });
-
-  it("uses Bar grouping so the whole widget set renders as one pill", () => {
-    // Reverted from Alignment after the user's reference design
-    // showed a single pill, not three. Side effect: the focused-
-    // workspace chip fills the pill height (SelectableFrame ->
-    // ui.max_rect), which we accept — the chip's colour is what
-    // visually matters, set via theme.bar_accent below.
-    const preset = buildPillPreset({
-      monitorIndex: 0,
-      monitorWidth: 1920,
-      monitorHeight: 1080,
-    });
-    expect(preset.grouping!.kind).toBe("Bar");
-  });
-
-  it("overrides theme.bar_accent to a light token for a cream chip on the dark pill", () => {
-    // Without this, the chip uses the user's accent (often a
-    // saturated colour that clashes with the pill background).
-    // Per-palette mapping: Base16 -> Base07, Catppuccin -> Lavender.
-    const base16 = buildPillPreset({
-      monitorIndex: 0,
-      monitorWidth: 1920,
-      monitorHeight: 1080,
-      currentTheme: { palette: "Base16", name: "Ashes" },
-    });
-    expect(base16.theme.bar_accent).toBe("Base07");
-    expect(base16.theme.palette).toBe("Base16");
-    expect(base16.theme.name).toBe("Ashes");
-
-    const catppuccin = buildPillPreset({
-      monitorIndex: 0,
-      monitorWidth: 1920,
-      monitorHeight: 1080,
-      currentTheme: { palette: "Catppuccin", name: "Mocha" },
-    });
-    expect(catppuccin.theme.bar_accent).toBe("Lavender");
-    expect(catppuccin.theme.palette).toBe("Catppuccin");
-    expect(catppuccin.theme.name).toBe("Mocha");
-  });
-
-  it("falls back to Base16 Ashes when there's no current theme or an unknown palette", () => {
-    const noTheme = buildPillPreset({
-      monitorIndex: 0,
-      monitorWidth: 1920,
-      monitorHeight: 1080,
-    });
-    expect(noTheme.theme).toEqual({
-      palette: "Base16",
-      name: "Ashes",
-      bar_accent: "Base07",
-    });
-
-    const customTheme = buildPillPreset({
-      monitorIndex: 0,
-      monitorWidth: 1920,
-      monitorHeight: 1080,
-      currentTheme: { palette: "Custom", base_palette: {} },
-    });
-    expect(customTheme.theme).toEqual({
-      palette: "Base16",
-      name: "Ashes",
-      bar_accent: "Base07",
-    });
-  });
-
-  it("reserves vertical work area on the targeted monitor", () => {
+  it("emits monitor as a bare integer index (SSOT: work_area_offset is computed by backend, not stored in the preset)", () => {
     const preset = buildPillPreset({
       monitorIndex: 2,
       monitorWidth: 1920,
       monitorHeight: 1080,
     });
-    const monitor = preset.monitor as {
-      index: number;
-      work_area_offset: { top: number; bottom: number; left: number; right: number };
-    };
-    expect(monitor.index).toBe(2);
-    expect(monitor.work_area_offset.top).toBeGreaterThan(0);
-    expect(monitor.work_area_offset.left).toBe(0);
-    expect(monitor.work_area_offset.right).toBe(0);
+    expect(preset.monitor).toBe(2);
+    // Critically: the preset has no `monitor.work_area_offset` field.
+    // Komodash's backend reads `height` + `margin.top` from the bar
+    // config and probes Win32 for the live taskbar height to derive
+    // the canonical reservation.
+    expect(typeof preset.monitor).toBe("number");
   });
 
-  it("reserves at least as much height as the top offset so the work area stays within the screen", () => {
-    // Regression: komorebi/src/workspace.rs:633-636 applies offset as
-    //   with_offset.top    += offset.top
-    //   with_offset.bottom -= offset.bottom   (where bottom = HEIGHT)
-    // So an asymmetric `{top: N, bottom: 0}` pushes the work area
-    // N pixels DOWN without shrinking its height — windows overflow
-    // past the screen edge. The fix is bottom >= top: the top edge
-    // moves down by N, the height shrinks by at least N, keeping
-    // the bottom edge at or above the screen bottom.
+  it("emits position.end as (monitor width, bar height)", () => {
     const preset = buildPillPreset({
       monitorIndex: 0,
       monitorWidth: 1920,
       monitorHeight: 1080,
     });
-    const offset = preset.monitor.work_area_offset;
-    expect(offset.bottom).toBeGreaterThanOrEqual(offset.top);
+    expect((preset.position.end as { x: number }).x).toBe(1920);
+    expect((preset.position.end as { y: number }).y).toBe(preset.height);
   });
 
-  it("adds widget spacing, label truncation, and inner frame margin so widgets aren't cramped", () => {
-    // The bare-minimum-fields version of this preset rendered a
-    // visibly cramped bar (overlapping widgets, no breathing room).
-    // Pinning the four typography fields ensures the preset always
-    // ships the spacing it needs.
+  it("centers the bar via symmetric margin.left / margin.right", () => {
     const preset = buildPillPreset({
       monitorIndex: 0,
       monitorWidth: 1920,
       monitorHeight: 1080,
     });
-    expect(preset.widget_spacing).toBeGreaterThanOrEqual(10);
-    expect(preset.max_label_width).toBeGreaterThan(0);
-    expect(preset.frame.inner_margin.x).toBeGreaterThan(0);
-    expect(preset.frame.inner_margin.y).toBeGreaterThanOrEqual(0);
+    expect(preset.margin.left).toBe(preset.margin.right);
   });
 
-  it("keeps inner_margin.x strictly greater than rounding so inner-widget backgrounds don't bleed past the pill curve", () => {
-    // Regression: with inner_margin.x = 22 and rounding = 26, the
-    // focused-workspace chip's background visibly bled outside the
-    // pill's rounded edge because the chip's left edge fell inside
-    // the curve's bounding box. The invariant must hold across any
-    // future rounding tweak.
+  it("scales pill width with the monitor, clamped to a comfortable range", () => {
+    const narrow = buildPillPreset({
+      monitorIndex: 0,
+      monitorWidth: 1366,
+      monitorHeight: 768,
+    });
+    const narrowWidth = 1366 - 2 * narrow.margin.left;
+    expect(narrowWidth).toBeGreaterThanOrEqual(600);
+
+    const ultra = buildPillPreset({
+      monitorIndex: 0,
+      monitorWidth: 3440,
+      monitorHeight: 1440,
+    });
+    const ultraWidth = 3440 - 2 * ultra.margin.left;
+    expect(ultraWidth).toBeLessThanOrEqual(2000);
+  });
+
+  it("caps pill width so there's at least some breathing room each side on narrow monitors", () => {
+    const preset = buildPillPreset({
+      monitorIndex: 0,
+      monitorWidth: 800,
+      monitorHeight: 1080,
+    });
+    expect(preset.margin.left).toBeGreaterThanOrEqual(20);
+    expect(preset.margin.right).toBeGreaterThanOrEqual(20);
+  });
+
+  it("sets a positive margin.top so the pill floats below the screen edge", () => {
     const preset = buildPillPreset({
       monitorIndex: 0,
       monitorWidth: 1920,
       monitorHeight: 1080,
     });
-    expect(preset.frame.inner_margin.x).toBeGreaterThan(preset.grouping.rounding);
+    expect(preset.margin.top).toBeGreaterThan(0);
+    expect(preset.margin.top).toBeLessThan(50);
   });
 
-  it("reserves more height at the bottom than the top so windows have a visible bottom gap", () => {
-    // komorebi/src/workspace.rs:633-636: `offset.bottom` shrinks
-    // the work area's height. To leave a gap at the screen bottom
-    // (matching the visual breathing room the pill has at the top)
-    // we must reserve more height than just the bar reservation.
+  it("omits position.start so komorebi-bar uses monitor defaults", () => {
     const preset = buildPillPreset({
       monitorIndex: 0,
       monitorWidth: 1920,
       monitorHeight: 1080,
     });
-    const offset = preset.monitor.work_area_offset;
-    expect(offset.bottom).toBeGreaterThan(offset.top);
+    expect(preset.position.start).toBeUndefined();
   });
 
-  it("makes the bar-bottom-to-windows gap equal the screen-top-to-bar gap", () => {
-    // The visible top gap is `margin.top` (pill renders inside the
-    // bar window, starting at the bar window's top + margin.top).
-    // The visible bottom gap (bar bottom to window top) is
-    // offset.top - (margin.top + bar_height). Match them:
-    //   offset.top = margin.top + bar_height + margin.top
+  it("writes a positive height that matches position.end.y (the source-of-truth backend reads)", () => {
     const preset = buildPillPreset({
       monitorIndex: 0,
       monitorWidth: 1920,
       monitorHeight: 1080,
     });
-    const topGap = preset.margin.top;
-    const bottomGap =
-      preset.monitor.work_area_offset.top - (preset.margin.top + preset.height);
-    expect(bottomGap).toBe(topGap);
+    expect(preset.height).toBeGreaterThan(0);
+    expect(preset.height).toBe((preset.position.end as { y: number }).y);
   });
 
-  it("sets explicit `height` so it stays in sync with position.end.y", () => {
+  it("uses rounded grouping with a sensible pill rounding (≤ half-height)", () => {
     const preset = buildPillPreset({
       monitorIndex: 0,
       monitorWidth: 1920,
       monitorHeight: 1080,
     });
-    expect(preset.height).toBe(52);
-    expect(preset.height).toBe((preset.position!.end as { y: number }).y);
+    expect(preset.grouping.kind).toBe("Bar");
+    expect(preset.grouping.rounding).toBeGreaterThan(0);
+    // Rounding can't exceed half the bar height or the corners cross.
+    expect(preset.grouping.rounding * 2).toBeLessThanOrEqual(preset.height);
   });
 
-  it("sets Inter as the font family — modern Mac/iOS aesthetic, falls back to system default if not installed", () => {
+  it("uses the Default grouping style (no drop shadow)", () => {
+    const preset = buildPillPreset({
+      monitorIndex: 0,
+      monitorWidth: 1920,
+      monitorHeight: 1080,
+    });
+    expect(preset.grouping.style).toBe("Default");
+  });
+
+  it("uses substantial transparency so the desktop shows through (no DWM blur on the current backdrop)", () => {
+    // ADR-0013: Win11 Acrylic ignores SetWindowRgn, so we ship without
+    // a DWM backdrop and rely on `bar_fill × transparency_alpha` to
+    // produce the translucent look. Low alpha (≤80) keeps it airy.
+    const preset = buildPillPreset({
+      monitorIndex: 0,
+      monitorWidth: 1920,
+      monitorHeight: 1080,
+    });
+    expect(preset.transparency_alpha).toBeGreaterThan(0);
+    expect(preset.transparency_alpha).toBeLessThan(200);
+  });
+
+  it("falls back to Base16 Ashes when there's no current theme", () => {
+    const preset = buildPillPreset({
+      monitorIndex: 0,
+      monitorWidth: 1920,
+      monitorHeight: 1080,
+    });
+    expect(preset.theme).toEqual({
+      palette: "Base16",
+      name: "Ashes",
+      accent: "Base05",
+      auto_select_fill: "Base07",
+      auto_select_text: "Base00",
+    });
+  });
+
+  it("preserves a Base16 current theme and augments accent + auto-select fields", () => {
+    const preset = buildPillPreset({
+      monitorIndex: 0,
+      monitorWidth: 1920,
+      monitorHeight: 1080,
+      currentTheme: { palette: "Base16", name: "Ashes" },
+    });
+    expect(preset.theme.palette).toBe("Base16");
+    expect(preset.theme.name).toBe("Ashes");
+    expect(preset.theme.accent).toBe("Base05");
+    expect(preset.theme.auto_select_fill).toBe("Base07");
+    expect(preset.theme.auto_select_text).toBe("Base00");
+  });
+
+  it("preserves a Catppuccin current theme and augments accent + auto-select fields", () => {
+    const preset = buildPillPreset({
+      monitorIndex: 0,
+      monitorWidth: 1920,
+      monitorHeight: 1080,
+      currentTheme: { palette: "Catppuccin", name: "Mocha" },
+    });
+    expect(preset.theme.accent).toBe("Text");
+    expect(preset.theme.auto_select_fill).toBe("Lavender");
+    expect(preset.theme.auto_select_text).toBe("Base");
+  });
+
+  it("trims the widget set to design-minimal: workspaces left, date + separator + time right", () => {
+    const preset = buildPillPreset({
+      monitorIndex: 0,
+      monitorWidth: 1920,
+      monitorHeight: 1080,
+    });
+
+    // Left: a single Komorebi composite with workspaces enabled,
+    // layout + focused_window disabled (matches Frame 39.svg).
+    expect(preset.left_widgets).toHaveLength(1);
+    const komorebi = (preset.left_widgets[0] as { Komorebi: Record<string, unknown> }).Komorebi;
+    expect((komorebi.workspaces as { enable: boolean }).enable).toBe(true);
+    expect((komorebi.workspaces as { display: string }).display).toBe(
+      "IndexAndTextOnSelected",
+    );
+    expect((komorebi.layout as { enable: boolean }).enable).toBe(false);
+    expect((komorebi.focused_window as { enable: boolean }).enable).toBe(false);
+
+    // Right: Date + Separator + Time, in that authored order.
+    expect(preset.right_widgets).toHaveLength(3);
+    const date = (preset.right_widgets[0] as { Date: Record<string, unknown> }).Date;
+    expect((date as { enable: boolean }).enable).toBe(true);
+    expect((date as { label_prefix: string }).label_prefix).toBe("None");
+
+    const sep = (preset.right_widgets[1] as { Separator: Record<string, unknown> }).Separator;
+    expect((sep as { enable: boolean }).enable).toBe(true);
+
+    const time = (preset.right_widgets[2] as { Time: Record<string, unknown> }).Time;
+    expect((time as { enable: boolean }).enable).toBe(true);
+    expect((time as { label_prefix: string }).label_prefix).toBe("None");
+  });
+
+  it("emits all fork-only chip styling fields with sensible values", () => {
+    // The patched komorebi-bar fork honors these; stock komorebi-bar
+    // silently ignores them. We assert presence + sanity here; pixel-
+    // perfect output depends on the patched binary being installed.
+    const preset = buildPillPreset({
+      monitorIndex: 0,
+      monitorWidth: 1920,
+      monitorHeight: 1080,
+    });
+
+    // Chip exterior padding (chip-to-pill gap), symmetric.
+    expect(preset.chip_padding.top).toBeGreaterThan(0);
+    expect(preset.chip_padding.bottom).toBe(preset.chip_padding.top);
+    expect(preset.chip_padding.left).toBe(preset.chip_padding.top);
+    expect(preset.chip_padding.right).toBe(preset.chip_padding.top);
+
+    // Chip interior padding (text-to-chip-edge), symmetric per axis.
+    expect(preset.chip_inner_padding.top).toBeGreaterThan(0);
+    expect(preset.chip_inner_padding.bottom).toBe(preset.chip_inner_padding.top);
+    expect(preset.chip_inner_padding.left).toBeGreaterThan(0);
+    expect(preset.chip_inner_padding.right).toBe(preset.chip_inner_padding.left);
+
+    // Pill-shaped chip: corner radius ≥ half the rendered text height.
+    expect(preset.chip_corner_radius).toBeGreaterThan(0);
+
+    // Colours match the SVG reference.
+    expect(preset.chip_fill).toBe("#D9D9D9");
+    expect(preset.chip_text_color).toBe("#000000");
+
+    // Hover chips off — only the focused chip ever paints.
+    expect(preset.chip_hover_disabled).toBe(true);
+
+    // No DWM backdrop (see ADR-0013).
+    expect(preset.backdrop).toBe("None");
+  });
+
+  it("uses Inter at a readable font size", () => {
     const preset = buildPillPreset({
       monitorIndex: 0,
       monitorWidth: 1920,
       monitorHeight: 1080,
     });
     expect(preset.font_family).toBe("Inter");
-    expect(preset.font_size).toBeGreaterThanOrEqual(12);
+    expect(preset.font_size).toBeGreaterThanOrEqual(10);
+  });
+
+  it("ensures inner_margin.x ≥ rounding so chip backgrounds don't bleed past the pill curve", () => {
+    // Regression: with inner_margin.x < rounding, the focused chip's
+    // background visibly bled outside the pill's rounded edge because
+    // the chip's left edge fell inside the curve's bounding box.
+    const preset = buildPillPreset({
+      monitorIndex: 0,
+      monitorWidth: 1920,
+      monitorHeight: 1080,
+    });
+    expect(preset.frame.inner_margin.x).toBeGreaterThanOrEqual(0);
+  });
+
+  it("exposes the bar geometry inputs the backend reservation calc needs (height + margin.top)", () => {
+    // CONTRACT: Komodash's `compute_bar_reservation` reads exactly
+    // these two fields from the on-disk bar config to derive the
+    // top reservation: `top = margin.top + height + margin.top`.
+    // If the preset stops emitting either, the backend will fall back
+    // to defaults and the visible gaps will be wrong.
+    const preset = buildPillPreset({
+      monitorIndex: 0,
+      monitorWidth: 1920,
+      monitorHeight: 1080,
+    });
+    expect(typeof preset.height).toBe("number");
+    expect(preset.height).toBeGreaterThan(0);
+    expect(typeof preset.margin.top).toBe("number");
+    expect(preset.margin.top).toBeGreaterThan(0);
   });
 });

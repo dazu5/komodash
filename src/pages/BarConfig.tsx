@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import { CircleCheck, Layout, PlayCircle, RotateCw, Sparkles } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { CircleCheck, Info, Layout, PlayCircle, RotateCw, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 
 import { PageHeader } from "@/components/page-shell";
@@ -9,14 +9,15 @@ import {
   applyBarConfig,
   getBarFieldCatalog,
   getBarSchema,
+  getMonitorGeometry,
   resetMonitorWorkAreaOffset,
 } from "@/api/bar";
+import { getConfig } from "@/api/config";
 import type { FieldCatalog } from "@/api/field-catalog";
 import { detectKomorebi } from "@/api/komorebi";
 import type { JsonSchema } from "@/api/schema";
-import { buildPillPreset } from "@/lib/pill-bar-preset";
+import { buildPillPreset, computePillMonitorGeometry } from "@/lib/pill-bar-preset";
 import { cn } from "@/lib/utils";
-import { useLiveState } from "@/stores/live-state";
 
 /**
  * The Status Bar page (issue #19).
@@ -44,15 +45,49 @@ export default function BarConfigPage() {
     apply,
   } = useBufferedConfig({ kind: "bar", applyFn: applyBarConfig });
 
-  const snapshot = useLiveState((s) => s.snapshot);
+  // Note: monitor info is now fetched via Win32 (getMonitorGeometry),
+  // not from useLiveState's snapshot. Snapshot is unreliable during
+  // bar restarts which is exactly when we need it.
 
-  const onApplyPill = useCallback(() => {
+  const onApplyPill = useCallback(async () => {
     const targetIndex = extractMonitorIndex(JSON.stringify(value)) ?? 0;
-    const monitor = pickLiveMonitor(snapshot, targetIndex);
+
+    // Win32-direct lookup for monitor width + DPI scale. Bypasses
+    // Komorebi's snapshot which goes stale during bar restarts.
+    const geom = await getMonitorGeometry(targetIndex).catch(() => null);
+
+    // Read the komorebi.json workspace inset so the preset can bump
+    // margin.top — see CONTEXT.md → Bar geometry. Field names ARE
+    // `default_workspace_padding` / `default_container_padding`
+    // (bare names return 0).
+    let containerPadding = 0;
+    try {
+      const raw = await getConfig("static");
+      const obj = JSON.parse(raw);
+      if (obj && typeof obj === "object") {
+        const wp =
+          typeof obj.default_workspace_padding === "number" &&
+          Number.isFinite(obj.default_workspace_padding)
+            ? Math.max(0, Math.trunc(obj.default_workspace_padding))
+            : 0;
+        const cp =
+          typeof obj.default_container_padding === "number" &&
+          Number.isFinite(obj.default_container_padding)
+            ? Math.max(0, Math.trunc(obj.default_container_padding))
+            : 0;
+        containerPadding = wp + cp;
+      }
+    } catch {
+      // Komorebi may not be running, config may not exist, or it may
+      // be malformed. Falls back to 0.
+    }
+
     const patch = buildPillPreset({
       monitorIndex: targetIndex,
-      monitorWidth: monitor?.width ?? 1920,
-      monitorHeight: monitor?.height ?? 1080,
+      monitorWidth: geom?.width ?? 1920,
+      monitorHeight: geom?.height ?? 1080,
+      monitorScale: geom?.scale ?? 1,
+      containerPadding,
       // Pass the current theme so the preset can preserve the user's
       // palette + name and only override `bar_accent` for a cream chip.
       currentTheme: (value as Record<string, unknown> | null)?.theme,
@@ -63,30 +98,80 @@ export default function BarConfigPage() {
     toast.success(
       "Pill style queued — review the preview, then Apply to restart the bar",
     );
-  }, [setField, snapshot, value]);
+  }, [setField, value]);
+
+  // Auto-refit: when the user picks a different monitor in the
+  // placement dropdown, `position.end.x` and `margin.left/right`
+  // need to be recomputed for the new monitor's actual width —
+  // otherwise the bar sits cramped + off-center. Effect runs
+  // whenever `value` changes; the ref guard limits actual refit
+  // work to the cases where the monitor index just transitioned.
+  //
+  // NOTE: this fires on EVERY monitor switch regardless of whether
+  // the user is using the pill preset. If you have a hand-crafted
+  // `position` / `margin` you want to preserve across monitor
+  // switches, ignore the dropdown and edit `monitor.index` in the
+  // raw JSON editor instead.
+  const lastMonitorRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (value === null) return;
+    const idx = extractMonitorIndex(JSON.stringify(value));
+    if (idx === null) return;
+
+    // First sighting — record but don't recompute.
+    if (lastMonitorRef.current === null) {
+      lastMonitorRef.current = idx;
+      return;
+    }
+    if (idx === lastMonitorRef.current) return;
+
+    lastMonitorRef.current = idx;
+
+    const v = value as Record<string, unknown> | null;
+    const margin = (v?.margin as Record<string, unknown> | undefined) ?? {};
+    const currentTopMargin =
+      typeof margin.top === "number" && Number.isFinite(margin.top)
+        ? Math.trunc(margin.top)
+        : 0;
+
+    // Fetch monitor info from Win32 directly — bypasses the snapshot
+    // entirely. Komorebi's snapshot drops monitor info while komorebi
+    // -bar restarts to move the bar (which is the trigger for THIS
+    // effect), so any snapshot-derived lookup is racing the restart.
+    // Win32 is always available and reports physical dimensions.
+    void (async () => {
+      const geom_in = await getMonitorGeometry(idx).catch(() => null);
+      if (!geom_in || geom_in.width <= 0) {
+        // Win32 doesn't know about this monitor index — unusual
+        // layout where EnumDisplayMonitors order doesn't match
+        // Komorebi's index. Roll back the ref so a retry can happen
+        // if the situation changes.
+        lastMonitorRef.current = null;
+        return;
+      }
+      const geom = computePillMonitorGeometry(
+        geom_in.width,
+        currentTopMargin,
+        geom_in.scale,
+      );
+      setField("position", geom.position);
+      setField("margin", geom.margin);
+      setField("height", geom.height);
+    })();
+  }, [value, setField]);
 
   const onApply = useCallback(async () => {
     try {
       // Detect a monitor switch by comparing baseline (currently-
-      // running config) to value (about-to-apply). If the bar is
-      // moving to a different monitor, explicitly release the
-      // abandoned monitor's work-area offset first — otherwise
-      // Komorebi keeps the old reservation and windows on that
-      // monitor don't reflow into the freed space. Best-effort:
-      // we swallow this call's failure so the bar restart still
-      // happens.
+      // running config) to value (about-to-apply). Release the
+      // abandoned monitor's reservation so its windows reflow.
       const prevIdx = extractMonitorIndex(baseline);
       const nextIdx = extractMonitorIndex(JSON.stringify(value));
-      if (
-        prevIdx !== null &&
-        nextIdx !== null &&
-        prevIdx !== nextIdx
-      ) {
+      if (prevIdx !== null && nextIdx !== null && prevIdx !== nextIdx) {
         try {
           await resetMonitorWorkAreaOffset(prevIdx);
         } catch {
           // Komorebi might not be running, or the index is stale.
-          // The bar restart below is still worth attempting.
         }
       }
       await apply();
@@ -106,6 +191,8 @@ export default function BarConfigPage() {
       />
 
       {!running && <NotRunningBanner />}
+
+      <ContainerPaddingHint />
 
       <div className="flex items-center gap-3">
         <button
@@ -177,6 +264,79 @@ export default function BarConfigPage() {
           />
         )}
       </section>
+    </div>
+  );
+}
+
+// ---- container_padding hint -----------------------------------------------
+
+/**
+ * Read-only hint surfacing the `container_padding` value from
+ * `komorebi.json`. Container padding (a **Komorebi** concept, not a
+ * **Bar configuration** one — see CONTEXT.md → Bar geometry) is what
+ * produces the visible gap between tiled windows and the workspace
+ * edges. The bar's `work_area_offset` only reserves space at monitor
+ * edges; the *visible breathing room* on all four sides comes from
+ * container_padding.
+ *
+ * Users were confused that "the side gap" and "the bottom gap" looked
+ * like one knob but lived in two different files. This hint connects
+ * them: shows the current value and explains where it comes from.
+ */
+function ContainerPaddingHint() {
+  const [padding, setPadding] = useState<number | null>(null);
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    getConfig("static")
+      .then((raw) => {
+        if (cancelled) return;
+        try {
+          const obj = JSON.parse(raw);
+          // Read both `default_workspace_padding` and
+          // `default_container_padding` and sum them — together they
+          // make up the visible inset between workspace edge and
+          // first window edge. (Bare `container_padding` / `workspace
+          // _padding` ARE NOT real top-level fields in komorebi.json
+          // even though the docs sometimes refer to them that way.)
+          const wp =
+            obj && typeof obj.default_workspace_padding === "number" &&
+            Number.isFinite(obj.default_workspace_padding)
+              ? Math.max(0, Math.trunc(obj.default_workspace_padding))
+              : 0;
+          const cp =
+            obj && typeof obj.default_container_padding === "number" &&
+            Number.isFinite(obj.default_container_padding)
+              ? Math.max(0, Math.trunc(obj.default_container_padding))
+              : 0;
+          const total = wp + cp;
+          setPadding(total > 0 ? total : null);
+        } catch {
+          setPadding(null);
+        }
+        setLoaded(true);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (!loaded) return null;
+
+  const message =
+    padding !== null && padding > 0
+      ? `Your workspaces have ${padding} px of breathing room between tiled windows and the workspace edges — that's the gap you see on the sides and bottom of every window. Set in komorebi.json → container_padding.`
+      : `No container_padding set in komorebi.json. Tiled windows currently sit flush to the workspace edges (no visible side or bottom gap). Add a value to komorebi.json → container_padding to introduce that breathing room.`;
+
+  return (
+    <div className="flex items-start gap-2.5 rounded-md border border-border/60 bg-secondary/30 px-3 py-2 text-xs text-muted-foreground">
+      <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 opacity-70" />
+      <span>{message}</span>
     </div>
   );
 }
@@ -283,15 +443,17 @@ function extractMonitorIndex(serialised: string | null): number | null {
 }
 
 /**
- * Pull the {width, height} of the named monitor from the live-state
- * snapshot. Returns null when the snapshot isn't available yet
- * (Komorebi not running, first event not yet received) — the caller
- * substitutes a sensible default in that case.
+ * @deprecated Replaced by [[getMonitorGeometry]] which queries Win32
+ * directly. Komorebi's snapshot drops monitor info during bar
+ * restarts, making it unreliable for the use cases (auto-refit,
+ * onApplyPill) that previously called this. Kept around in case any
+ * future code wants snapshot-derived monitor info for non-critical
+ * display, but should not be used in the bar's apply path.
  */
 function pickLiveMonitor(
   snapshot: unknown,
   index: number,
-): { width: number; height: number } | null {
+): { width: number; height: number; left: number; top: number } | null {
   const state = (snapshot as { state?: unknown } | null)?.state;
   if (!state || typeof state !== "object") return null;
   const ring = (state as Record<string, unknown>).monitors as
@@ -310,7 +472,7 @@ function pickLiveMonitor(
   const width = right - left;
   const height = bottom - top;
   if (width <= 0 || height <= 0) return null;
-  return { width, height };
+  return { width, height, left, top };
 }
 
 function numberOr(v: unknown, fallback: number): number {

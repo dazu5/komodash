@@ -396,47 +396,24 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
 }
 
 /**
- * Structured widget for the bar's `monitor` field (issue #19 polish
- * per the [[no-json-as-ux]] feedback). The bar accepts either an
- * integer (just the index) OR a `MonitorConfig` object
- * `{ index, work_area_offset? }`.
+ * Index-only widget for the bar's `monitor` field. **Does not** read
+ * or write `work_area_offset` — that's a derived value computed by
+ * Komodash at apply time from the bar's `height` + `margin.top` +
+ * the live taskbar height of the target monitor (see Rust
+ * `compute_bar_reservation`, CONTEXT.md → Bar geometry, and ADR-0013).
  *
- * UX: a single dropdown. Komodash auto-fills `work_area_offset` —
- * the user never sees a pixel value. Padding scales with the selected
- * monitor's pixel height so a 4K display gets more breathing room
- * than 1080p:
+ * Before this simplification (3+ iterations of debugging) the widget
+ * silently auto-normalized `work_area_offset` on mount AND on dropdown
+ * change, stomping whatever the pill preset had written. The 73-px
+ * pill-bar reservation kept getting downgraded to a 50-px hardcoded
+ * floor, so app windows overlapped the bar. The fix is to not write
+ * the offset at all — let the single backend SSOT own it.
  *
- *   padding = clamp(round(monitor_height * 0.025), 24, 80)
- *
- *   - 1080p → 27 px  (≈ 2.5% of 1080)
- *   - 1440p → 36 px
- *   - 2160p (4K) → 54 px
- *
- * The same value is used for top *and* bottom so windows tile in a
- * symmetric area (the user's complaint was windows touching the
- * bottom edge with no padding). Left/right stay 0 — the bar spans
- * full width.
- *
- * On mount, if the on-disk offsets don't match Komodash's auto
- * values, the widget emits a corrective value so the next Apply
- * writes the right offsets. Without this, users who arrive with a
- * legacy stale config see "Monitor 1" selected but the saved offsets
- * are still old.
+ * Emits a bare integer when the user picks from the dropdown. Reads
+ * either a bare integer OR a `{index, ...}` object on input (legacy
+ * configs that have `work_area_offset` in them remain readable; that
+ * field is ignored).
  */
-const PADDING_RATIO = 0.025; // 2.5% of monitor height
-// Floor must cover the actual rendered bar height. The bar's
-// `font_size=12` default produces a ~30 px text strip, but the bar
-// also adds internal padding around the text — total rendered
-// height lands around 45–50 px. 50 covers that *and* leaves a
-// visible gap so windows don't kiss the bar's bottom edge. Verified
-// against a 1920×1080 setup where top=32 produced zero visible
-// breathing room (the user saw "windows on top of the status bar,
-// no padding that separates the 2"). Future polish: detect the
-// actual bar window height via Win32 instead of guessing.
-const MIN_PADDING_PX = 50;
-const MAX_PADDING_PX = 100;
-const FALLBACK_MONITOR_HEIGHT_PX = 1080;
-
 export function MonitorPlacementWidget({
   value,
   readonly,
@@ -451,53 +428,6 @@ export function MonitorPlacementWidget({
 
   const parsed = parseMonitorValue(value);
   const idx = parsed.index;
-  const selected = monitors.find((m) => m.index === idx) ?? monitors[0] ?? null;
-  const padding = computePadding(selected?.height ?? null);
-
-  // Build the canonical "what this monitor should look like on disk"
-  // value so we can both emit on dropdown change *and* detect drift
-  // from the on-disk value on mount.
-  const buildCanonicalValue = (
-    nextIndex: number,
-    monitorHeight: number | null,
-  ) => ({
-    index: nextIndex,
-    work_area_offset: {
-      left: 0,
-      top: computePadding(monitorHeight),
-      right: 0,
-      bottom: computePadding(monitorHeight),
-    },
-  });
-
-  // Mount-time normalization: if the saved value's offsets don't
-  // match what Komodash would auto-compute for this monitor, emit a
-  // corrective value once. The pending counter ticks up; the user
-  // clicks Apply to confirm. Ref-guards re-entry so the effect
-  // doesn't loop on the resulting prop change.
-  const normalizedRef = useRef(false);
-  useEffect(() => {
-    if (readonly || normalizedRef.current) return;
-    if (selected === null) return; // Wait for the monitor list.
-    const canonical = buildCanonicalValue(idx, selected.height);
-    if (!offsetsMatch(parsed.offset, canonical.work_area_offset)) {
-      onChange?.(canonical);
-    }
-    normalizedRef.current = true;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selected, readonly]);
-
-  const emitForIndex = (nextIndex: number) => {
-    const m = monitors.find((mm) => mm.index === nextIndex) ?? null;
-    onChange?.(buildCanonicalValue(nextIndex, m?.height ?? null));
-  };
-
-  const paddingHint =
-    selected !== null
-      ? selected.height !== null
-        ? `${padding} px top + ${padding} px bottom (scaled from your ${selected.height} px monitor)`
-        : `${padding} px top + ${padding} px bottom (default — live monitor info not available)`
-      : null;
 
   return (
     <div className="space-y-2">
@@ -505,7 +435,7 @@ export function MonitorPlacementWidget({
         className={baseInput}
         disabled={readonly}
         value={idx}
-        onChange={(e) => emitForIndex(Number(e.target.value))}
+        onChange={(e) => onChange?.(Number(e.target.value))}
       >
         {monitors.map((m) => (
           <option key={m.index} value={m.index}>
@@ -515,28 +445,11 @@ export function MonitorPlacementWidget({
       </select>
       <p className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
         <MonitorIcon className="h-3 w-3 shrink-0" />
-        Komodash auto-reserves bar space and a matching bottom gap,
-        scaled to this monitor's height.
-        {paddingHint && (
-          <span className="opacity-75"> — {paddingHint}</span>
-        )}
+        Komodash auto-reserves space for the bar and clears the Windows
+        taskbar on this monitor — you don't need to specify pixel
+        offsets.
       </p>
     </div>
-  );
-}
-
-function computePadding(monitorHeight: number | null): number {
-  const h = monitorHeight ?? FALLBACK_MONITOR_HEIGHT_PX;
-  const raw = Math.round(h * PADDING_RATIO);
-  return Math.max(MIN_PADDING_PX, Math.min(MAX_PADDING_PX, raw));
-}
-
-function offsetsMatch(a: WorkAreaOffset, b: WorkAreaOffset): boolean {
-  return (
-    a.top === b.top &&
-    a.bottom === b.bottom &&
-    a.left === b.left &&
-    a.right === b.right
   );
 }
 

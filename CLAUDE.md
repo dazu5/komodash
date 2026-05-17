@@ -41,6 +41,21 @@ pnpm install
 pnpm tauri dev    # first build of Tauri takes 5–10 minutes
 ```
 
+### Hot-reload caveat
+
+- **Frontend (TS / React)** hot-reloads via Vite — instant.
+- **Backend (`src-tauri/`)** does NOT hot-reload. Any change in Rust requires `Ctrl+C` + `pnpm tauri dev` again, otherwise the running app is using the previously-built binary and your change has no effect. This has cost us multiple debugging rounds where a backend fix appeared to "not work" — it was just stale.
+
+### Runtime diagnostics
+
+Set `KOMODASH_TRACE=1` before `pnpm tauri dev` to surface dev-only `eprintln!` output (currently: the bar's `apply_bar_config` pipeline). First step of any "X isn't working" investigation for cross-layer flows.
+
+```powershell
+$env:KOMODASH_TRACE = "1"; pnpm tauri dev
+```
+
+For structured/file logging there's the separate `KOMODASH_LOG` env var (standard `tracing_subscriber::EnvFilter` syntax — e.g. `komodash=debug`); see `src-tauri/src/diag_log/`.
+
 ## Build a release
 
 ```powershell
