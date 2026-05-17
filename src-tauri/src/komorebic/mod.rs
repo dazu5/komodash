@@ -666,10 +666,29 @@ impl Komorebic for WinKomorebic {
     }
 }
 
+/// Return the Komodash-bundled patched `komorebi-bar.exe` next to
+/// the running `komodash.exe`, if it exists. Lives at this layer
+/// rather than inside `WinKomorebic` so the `which` fallback path
+/// stays alongside the bundled-binary fast path in one function.
+fn bundled_bar() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    let candidate = dir.join("komorebi-bar.exe");
+    candidate.exists().then_some(candidate)
+}
+
 impl WinKomorebic {
-    /// Find `komorebi-bar.exe`. PATH first (winget shim, Scoop shim);
-    /// fallback to the install dir alongside `komorebic.exe`.
+    /// Find `komorebi-bar.exe`. Preference order:
+    /// 1. Komodash-bundled patched binary sitting next to `komodash.exe`
+    ///    (carries the `chip_padding` field used by the pill preset —
+    ///    upstream komorebi-bar ignores that field but the patched
+    ///    one honours it).
+    /// 2. PATH (winget shim, Scoop shim).
+    /// 3. Same install dir as komorebic.
     fn locate_bar(&self) -> Result<PathBuf> {
+        if let Some(bundled) = bundled_bar() {
+            return Ok(bundled);
+        }
         if let Ok(p) = which::which("komorebi-bar.exe") {
             return Ok(p);
         }

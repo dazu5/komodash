@@ -45,6 +45,31 @@ Komodash's cached parse of `komorebic --help` output: the list of valid `komoreb
 **Chord**:
 A keyboard key combination that triggers a hotkey — one or more modifiers (Ctrl, Alt, Shift, Win) plus one base key. The **End user** enters a **Chord** in the Hotkey editor by pressing the keys; Komodash normalises modifier order on capture and on save.
 
+### Bar geometry
+
+The status bar's footprint is the result of four distinct numbers that share no inheritance relationship — each lives at a different layer and reserves a different kind of space. Bug reports use these terms precisely.
+
+**Bar height**:
+The painted height of the pill bar in pixels. Set on `komorebi.bar.json:height`. Independent of the window's vertical position.
+
+**Bar margin**:
+Pixels of empty space between the bar's painted edge and the window's edge it sits closest to. Set on `komorebi.bar.json:margin.{top,bottom,left,right}`. Only `top` is meaningful for a top-anchored bar.
+
+**Frame inner margin**:
+Pixels of empty space between the inside of the painted pill and the widgets it contains. Set on `komorebi.bar.json:frame.inner_margin.{x,y}`. Widgets are inset from the pill edge by this amount before chip rendering takes over.
+
+**Work-area offset (`work_area_offset.{top,bottom,left,right}`)**:
+Pixels of space at each *monitor* edge that **Komorebi** must keep empty when tiling **Workspaces**. Set on `komorebi.bar.json:monitor.work_area_offset`, also pushable at runtime via `komorebic monitor-work-area-offset`. The four edges are **independent** — each only affects its own monitor edge. `top` is where the bar sits; `bottom` clears the Windows taskbar; `left`/`right` reserve for hypothetical side bars. This is a **Komorebi** concept, not a bar concept.
+
+**Container padding**:
+Pixels of space **Komorebi** adds between tiled **Windows** and the **Workspace** edge. Set on `komorebi.json:container_padding`. Lives in a **different file** than the bar geometry. This is what produces the visible gap between tiled windows and the screen sides — *not* `work_area_offset.left/right`, which are usually zero.
+
+**Taskbar height**:
+The pixel height of the visible Windows taskbar on a given **Monitor**. Probed at runtime via Win32 `GetMonitorInfoW` (`rcMonitor.bottom − rcWork.bottom`). Auto-hidden taskbar → 0; side-anchored taskbar → 0 (and `left`/`right` non-zero instead).
+
+**Bar reservation**:
+The computed `work_area_offset` Komodash pushes for the bar's target **Monitor**. Derived from **Bar margin**, **Bar height**, and **Taskbar height** by `compute_bar_reservation()`. The on-disk `work_area_offset` is a **derived value** — users edit the inputs, not the result. Sole source of truth.
+
 ### Live view
 
 **Live state**:
