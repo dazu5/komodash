@@ -25,7 +25,7 @@ describe("buildPillPreset", () => {
       monitorHeight: 1080,
     });
     expect((preset.position!.end as { x: number }).x).toBe(1920);
-    expect((preset.position!.end as { y: number }).y).toBe(48);
+    expect((preset.position!.end as { y: number }).y).toBe(52);
   });
 
   it("centers the bar via symmetric margin.left / margin.right (the only durable mechanism)", () => {
@@ -106,7 +106,7 @@ describe("buildPillPreset", () => {
       monitorWidth: 1920,
       monitorHeight: 1080,
     });
-    expect(preset.grouping!.rounding).toBe(24);
+    expect(preset.grouping!.rounding).toBe(26);
     expect(preset.grouping!.rounding * 2).toBe(preset.height);
   });
 
@@ -119,14 +119,19 @@ describe("buildPillPreset", () => {
     expect(preset.grouping!.style).toBe("Default");
   });
 
-  it("uses translucent transparency for a glass / Mac feel — neither fully opaque nor invisible", () => {
+  it("uses solid-dark transparency (~90%) for strong contrast against the desktop, not glass", () => {
+    // egui doesn't do backdrop blur, so true glassmorphism isn't
+    // available. Lower alpha (e.g. 180) looks washed out on a dark
+    // wallpaper. The reference design we're matching is solid-dark,
+    // ~90% alpha — depth comes from the wallpaper bleed-through at
+    // the edges, not a translucent fill.
     const preset = buildPillPreset({
       monitorIndex: 0,
       monitorWidth: 1920,
       monitorHeight: 1080,
     });
-    expect(preset.transparency_alpha).toBeGreaterThan(120);
-    expect(preset.transparency_alpha).toBeLessThan(220);
+    expect(preset.transparency_alpha).toBeGreaterThan(220);
+    expect(preset.transparency_alpha).toBeLessThanOrEqual(255);
   });
 
   it("includes grouping.kind so komorebi-bar can deserialize the tagged enum", () => {
@@ -203,7 +208,7 @@ describe("buildPillPreset", () => {
       monitorWidth: 1920,
       monitorHeight: 1080,
     });
-    expect(preset.height).toBe(48);
+    expect(preset.height).toBe(52);
     expect(preset.height).toBe((preset.position!.end as { y: number }).y);
   });
 

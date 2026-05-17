@@ -42,29 +42,31 @@ const MIN_PILL_WIDTH = 900;
 const MAX_PILL_WIDTH = 1500;
 /** Pill width target — share of monitor width, clamped to MIN/MAX. */
 const PILL_WIDTH_RATIO = 0.7;
-const TOP_MARGIN_PX = 10;
-const BAR_HEIGHT_PX = 48;
+const TOP_MARGIN_PX = 12;
+const BAR_HEIGHT_PX = 52;
 /** Half the bar height — gives the bar a true pill shape (semi-
  *  circular ends) rather than a softened rectangle. */
-const PILL_ROUNDING = 24;
-/** macOS-style: clean container, no drop shadow. The translucency +
- *  rounded shape carry the visual interest. komorebi-bar's other
- *  shadow styles read as heavy/dated in a system-bar context. */
+const PILL_ROUNDING = 26;
+/** Clean container, no drop shadow. The dark solid fill against the
+ *  desktop wallpaper carries the visual depth — matches the
+ *  reference design's flat-but-premium feel. */
 const PILL_STYLE = "Default";
-/** Lower alpha (~70%) for a glass / translucent feel. egui doesn't
- *  do backdrop blur, so true glassmorphism isn't available — this is
- *  the closest approximation. */
-const PILL_TRANSPARENCY = 180;
+/** High alpha (~92%) for a solid-dark pill — the reference design
+ *  reads premium because the dark background gives strong contrast
+ *  with the icons, not because of transparency. egui doesn't support
+ *  backdrop blur so glass-style transparency just makes the pill
+ *  look washed out on a dark wallpaper. */
+const PILL_TRANSPARENCY = 235;
 /** Truncate long window-title labels so one widget can't dominate
  *  the pill's horizontal real estate. Matches what a modern OS bar
  *  does instead of growing without bound. */
 const MAX_LABEL_WIDTH = 180;
 /** Gap between adjacent widgets. */
 const WIDGET_SPACING = 16;
-/** Inner padding inside the pill's rounded background so widget
- *  content doesn't touch the curved edge. */
-const FRAME_INNER_MARGIN_X = 18;
-const FRAME_INNER_MARGIN_Y = 6;
+/** Inner padding inside the pill's rounded background. Generous
+ *  horizontal so content sits well clear of the curved ends. */
+const FRAME_INNER_MARGIN_X = 22;
+const FRAME_INNER_MARGIN_Y = 8;
 /** Inter is widely available on modern Windows installs (ships with
  *  some apps, common dev font). egui falls back to system default if
  *  it isn't installed — no parse failure. */
