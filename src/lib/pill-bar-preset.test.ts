@@ -134,18 +134,23 @@ describe("buildPillPreset", () => {
     expect(preset.transparency_alpha).toBeLessThanOrEqual(255);
   });
 
-  it("includes grouping.kind so komorebi-bar can deserialize the tagged enum", () => {
+  it("uses Alignment grouping so left/center/right get their own content-sized pills", () => {
     // Regression for the user-reported "no bar appearing" — komorebi-bar's
     // `Grouping` is `#[serde(tag = "kind")]` (komorebi-bar/src/render.rs:30)
     // with variants None / Bar / Alignment / Widget. Without `kind`, the
     // bar fails parse with "missing field `kind`" and never starts.
-    // "Bar" groups all widgets as one — what we want for a pill.
+    //
+    // We pick "Alignment" over "Bar" because SelectableFrame
+    // (komorebi-bar/src/selected_frame.rs) fills its parent UI's
+    // max_rect — with "Bar" the focused chip fills the whole bar
+    // height; with "Alignment" it only fills the left group's height
+    // (a much smaller pill).
     const preset = buildPillPreset({
       monitorIndex: 0,
       monitorWidth: 1920,
       monitorHeight: 1080,
     });
-    expect(preset.grouping!.kind).toBe("Bar");
+    expect(preset.grouping!.kind).toBe("Alignment");
   });
 
   it("reserves vertical work area on the targeted monitor", () => {
@@ -224,6 +229,23 @@ describe("buildPillPreset", () => {
     });
     const offset = preset.monitor.work_area_offset;
     expect(offset.bottom).toBeGreaterThan(offset.top);
+  });
+
+  it("makes the bar-bottom-to-windows gap equal the screen-top-to-bar gap", () => {
+    // The visible top gap is `margin.top` (pill renders inside the
+    // bar window, starting at the bar window's top + margin.top).
+    // The visible bottom gap (bar bottom to window top) is
+    // offset.top - (margin.top + bar_height). Match them:
+    //   offset.top = margin.top + bar_height + margin.top
+    const preset = buildPillPreset({
+      monitorIndex: 0,
+      monitorWidth: 1920,
+      monitorHeight: 1080,
+    });
+    const topGap = preset.margin.top;
+    const bottomGap =
+      preset.monitor.work_area_offset.top - (preset.margin.top + preset.height);
+    expect(bottomGap).toBe(topGap);
   });
 
   it("sets explicit `height` so it stays in sync with position.end.y", () => {

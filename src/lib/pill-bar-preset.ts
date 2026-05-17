@@ -33,8 +33,16 @@
  *
  * komorebi-bar's `Grouping` is `#[serde(tag = "kind")]` (variants
  * None / Bar / Alignment / Widget). Without the `kind` discriminator,
- * config parse fails entirely and the bar never starts. "Bar" groups
- * the whole widget set as one pill.
+ * config parse fails entirely and the bar never starts.
+ *
+ * We use `Alignment`, not `Bar`: the left / center / right widget
+ * groups each become their own content-sized pill instead of all
+ * sharing one big pill. This matters because the focused-workspace
+ * chip (`SelectableFrame` in komorebi-bar/src/selected_frame.rs)
+ * always fills its parent UI's `max_rect` — with `Bar` grouping the
+ * chip fills the whole bar height; with `Alignment` it only fills
+ * the left group's height (a much smaller pill), matching the
+ * reference design's "smaller chip inside a bigger pill" feel.
  */
 
 const MIN_SIDE_MARGIN = 50;
@@ -78,12 +86,13 @@ const PILL_FONT_SIZE = 13;
 /** Vertical work-area reservation. komorebi-bar's offset semantics:
  *  - `top` is added to the work area's top edge (pushes it down)
  *  - `bottom` is subtracted from the work area's HEIGHT
- *  So setting `bottom > top` gives the work area extra room at the
- *  bottom of the screen, matching the visual breathing room the pill
- *  has at the top. Without this asymmetry windows tile right up to
- *  the screen's bottom edge — no symmetric gap with the pill. */
-const WORK_AREA_TOP_RESERVE = TOP_MARGIN_PX + BAR_HEIGHT_PX + 10;
-const WORK_AREA_BOTTOM_PADDING = 12;
+ *  Top reserve = top_margin + bar_height + top_margin again, so the
+ *  gap from bar bottom to window top exactly equals the gap from
+ *  screen top to bar top. Bottom reserve adds extra at the screen
+ *  bottom so windows have visible breathing room from the screen
+ *  edge (and from a Windows taskbar if present). */
+const WORK_AREA_TOP_RESERVE = TOP_MARGIN_PX + BAR_HEIGHT_PX + TOP_MARGIN_PX;
+const WORK_AREA_BOTTOM_PADDING = 24;
 const WORK_AREA_BOTTOM_RESERVE = WORK_AREA_TOP_RESERVE + WORK_AREA_BOTTOM_PADDING;
 
 export interface PillBarInput {
@@ -108,10 +117,15 @@ export interface PillBarPatch {
   };
   grouping: {
     /** Discriminator for komorebi-bar's `#[serde(tag = "kind")]`
-     *  Grouping enum. "Bar" groups the whole widget set as one — the
-     *  shape we want for a pill. Without this field komorebi-bar fails
-     *  parse with "missing field `kind`" and the bar never starts. */
-    kind: "Bar";
+     *  Grouping enum. Without this field komorebi-bar fails parse
+     *  with "missing field `kind`" and the bar never starts.
+     *
+     *  "Alignment" gives left / center / right widgets their own
+     *  content-sized pill — preferred over "Bar" because the
+     *  focused-workspace chip fills its parent's max_rect, and a
+     *  smaller parent (= smaller pill) means a more proportionate
+     *  chip. */
+    kind: "Alignment";
     rounding: number;
     style: string;
     transparency_alpha: number;
@@ -158,7 +172,7 @@ export function buildPillPreset(input: PillBarInput): PillBarPatch {
       inner_margin: { x: FRAME_INNER_MARGIN_X, y: FRAME_INNER_MARGIN_Y },
     },
     grouping: {
-      kind: "Bar",
+      kind: "Alignment",
       rounding: PILL_ROUNDING,
       style: PILL_STYLE,
       transparency_alpha: PILL_TRANSPARENCY,
