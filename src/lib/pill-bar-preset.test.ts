@@ -89,6 +89,20 @@ describe("buildPillPreset", () => {
     expect(preset.transparency_alpha!).toBeLessThanOrEqual(255);
   });
 
+  it("includes grouping.kind so komorebi-bar can deserialize the tagged enum", () => {
+    // Regression for the user-reported "no bar appearing" — komorebi-bar's
+    // `Grouping` is `#[serde(tag = "kind")]` (komorebi-bar/src/render.rs:30)
+    // with variants None / Bar / Alignment / Widget. Without `kind`, the
+    // bar fails parse with "missing field `kind`" and never starts.
+    // "Bar" groups all widgets as one — what we want for a pill.
+    const preset = buildPillPreset({
+      monitorIndex: 0,
+      monitorWidth: 1920,
+      monitorHeight: 1080,
+    });
+    expect(preset.grouping!.kind).toBe("Bar");
+  });
+
   it("reserves vertical work area on the targeted monitor", () => {
     const preset = buildPillPreset({
       monitorIndex: 2,

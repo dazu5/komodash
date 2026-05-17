@@ -60,6 +60,11 @@ export interface PillBarPatch {
   };
   margin: { top: number; bottom: number; left: number; right: number };
   grouping: {
+    /** Discriminator for komorebi-bar's `#[serde(tag = "kind")]`
+     *  Grouping enum. "Bar" groups the whole widget set as one — the
+     *  shape we want for a pill. Without this field komorebi-bar fails
+     *  parse with "missing field `kind`" and the bar never starts. */
+    kind: "Bar";
     rounding: number;
     style: string;
     transparency_alpha: number;
@@ -94,6 +99,7 @@ export function buildPillPreset(input: PillBarInput): PillBarPatch {
       right: sidePadding,
     },
     grouping: {
+      kind: "Bar",
       rounding: PILL_ROUNDING,
       style: PILL_STYLE,
       transparency_alpha: PILL_TRANSPARENCY,
