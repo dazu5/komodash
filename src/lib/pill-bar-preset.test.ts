@@ -164,26 +164,22 @@ describe("buildPillPreset", () => {
     expect(monitor.work_area_offset.right).toBe(0);
   });
 
-  it("uses symmetric top/bottom offset so the work area stays within the screen", () => {
+  it("reserves at least as much height as the top offset so the work area stays within the screen", () => {
     // Regression: komorebi/src/workspace.rs:633-636 applies offset as
     //   with_offset.top    += offset.top
     //   with_offset.bottom -= offset.bottom   (where bottom = HEIGHT)
     // So an asymmetric `{top: N, bottom: 0}` pushes the work area
-    // N pixels DOWN without shrinking its height, causing windows to
-    // overflow past the screen edge. The fix is symmetric N/N: shifts
-    // the work area down by N while shrinking height by N, keeping
-    // the bottom edge anchored at the screen bottom.
+    // N pixels DOWN without shrinking its height — windows overflow
+    // past the screen edge. The fix is bottom >= top: the top edge
+    // moves down by N, the height shrinks by at least N, keeping
+    // the bottom edge at or above the screen bottom.
     const preset = buildPillPreset({
       monitorIndex: 0,
       monitorWidth: 1920,
       monitorHeight: 1080,
     });
-    const offset = (
-      preset.monitor as {
-        work_area_offset: { top: number; bottom: number };
-      }
-    ).work_area_offset;
-    expect(offset.bottom).toBe(offset.top);
+    const offset = preset.monitor.work_area_offset;
+    expect(offset.bottom).toBeGreaterThanOrEqual(offset.top);
   });
 
   it("adds widget spacing, label truncation, and inner frame margin so widgets aren't cramped", () => {
@@ -200,6 +196,34 @@ describe("buildPillPreset", () => {
     expect(preset.max_label_width).toBeGreaterThan(0);
     expect(preset.frame.inner_margin.x).toBeGreaterThan(0);
     expect(preset.frame.inner_margin.y).toBeGreaterThanOrEqual(0);
+  });
+
+  it("keeps inner_margin.x strictly greater than rounding so inner-widget backgrounds don't bleed past the pill curve", () => {
+    // Regression: with inner_margin.x = 22 and rounding = 26, the
+    // focused-workspace chip's background visibly bled outside the
+    // pill's rounded edge because the chip's left edge fell inside
+    // the curve's bounding box. The invariant must hold across any
+    // future rounding tweak.
+    const preset = buildPillPreset({
+      monitorIndex: 0,
+      monitorWidth: 1920,
+      monitorHeight: 1080,
+    });
+    expect(preset.frame.inner_margin.x).toBeGreaterThan(preset.grouping.rounding);
+  });
+
+  it("reserves more height at the bottom than the top so windows have a visible bottom gap", () => {
+    // komorebi/src/workspace.rs:633-636: `offset.bottom` shrinks
+    // the work area's height. To leave a gap at the screen bottom
+    // (matching the visual breathing room the pill has at the top)
+    // we must reserve more height than just the bar reservation.
+    const preset = buildPillPreset({
+      monitorIndex: 0,
+      monitorWidth: 1920,
+      monitorHeight: 1080,
+    });
+    const offset = preset.monitor.work_area_offset;
+    expect(offset.bottom).toBeGreaterThan(offset.top);
   });
 
   it("sets explicit `height` so it stays in sync with position.end.y", () => {

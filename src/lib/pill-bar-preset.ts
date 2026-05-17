@@ -63,19 +63,28 @@ const PILL_TRANSPARENCY = 235;
 const MAX_LABEL_WIDTH = 180;
 /** Gap between adjacent widgets. */
 const WIDGET_SPACING = 16;
-/** Inner padding inside the pill's rounded background. Generous
- *  horizontal so content sits well clear of the curved ends. */
-const FRAME_INNER_MARGIN_X = 22;
+/** Inner padding inside the pill's rounded background. Must be
+ *  STRICTLY GREATER than `PILL_ROUNDING` — otherwise content
+ *  positioned at the inner-margin offset still falls inside the
+ *  pill's curve, and inner-widget backgrounds (e.g. the focused-
+ *  workspace chip) bleed past the rounded edge. */
+const FRAME_INNER_MARGIN_X = 32;
 const FRAME_INNER_MARGIN_Y = 8;
 /** Inter is widely available on modern Windows installs (ships with
  *  some apps, common dev font). egui falls back to system default if
  *  it isn't installed — no parse failure. */
 const PILL_FONT_FAMILY = "Inter";
 const PILL_FONT_SIZE = 13;
-/** Vertical work-area reservation. Symmetric so the work area's
- *  bottom edge stays anchored at the screen bottom — see the
- *  Rect-naming note above. */
-const WORK_AREA_RESERVE = TOP_MARGIN_PX + BAR_HEIGHT_PX + 10;
+/** Vertical work-area reservation. komorebi-bar's offset semantics:
+ *  - `top` is added to the work area's top edge (pushes it down)
+ *  - `bottom` is subtracted from the work area's HEIGHT
+ *  So setting `bottom > top` gives the work area extra room at the
+ *  bottom of the screen, matching the visual breathing room the pill
+ *  has at the top. Without this asymmetry windows tile right up to
+ *  the screen's bottom edge — no symmetric gap with the pill. */
+const WORK_AREA_TOP_RESERVE = TOP_MARGIN_PX + BAR_HEIGHT_PX + 10;
+const WORK_AREA_BOTTOM_PADDING = 12;
+const WORK_AREA_BOTTOM_RESERVE = WORK_AREA_TOP_RESERVE + WORK_AREA_BOTTOM_PADDING;
 
 export interface PillBarInput {
   monitorIndex: number;
@@ -159,14 +168,14 @@ export function buildPillPreset(input: PillBarInput): PillBarPatch {
       // komorebi/src/workspace.rs:633-636 applies the offset as
       //   with_offset.top    += offset.top
       //   with_offset.bottom -= offset.bottom
-      // where `bottom` is HEIGHT (Rect naming again). Symmetric N/N
-      // keeps the bottom edge anchored at the screen bottom — matches
-      // what MonitorPlacementWidget does for the bar's own monitor
-      // field.
+      // where `bottom` is HEIGHT (Rect naming again). Asymmetric
+      // values give us both a top reservation (for the pill) AND a
+      // visual gap at the screen bottom (so windows don't touch the
+      // monitor edge).
       index: input.monitorIndex,
       work_area_offset: {
-        top: WORK_AREA_RESERVE,
-        bottom: WORK_AREA_RESERVE,
+        top: WORK_AREA_TOP_RESERVE,
+        bottom: WORK_AREA_BOTTOM_RESERVE,
         left: 0,
         right: 0,
       },
