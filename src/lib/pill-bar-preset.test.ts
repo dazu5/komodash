@@ -134,23 +134,68 @@ describe("buildPillPreset", () => {
     expect(preset.transparency_alpha).toBeLessThanOrEqual(255);
   });
 
-  it("uses Alignment grouping so left/center/right get their own content-sized pills", () => {
-    // Regression for the user-reported "no bar appearing" — komorebi-bar's
-    // `Grouping` is `#[serde(tag = "kind")]` (komorebi-bar/src/render.rs:30)
-    // with variants None / Bar / Alignment / Widget. Without `kind`, the
-    // bar fails parse with "missing field `kind`" and never starts.
-    //
-    // We pick "Alignment" over "Bar" because SelectableFrame
-    // (komorebi-bar/src/selected_frame.rs) fills its parent UI's
-    // max_rect — with "Bar" the focused chip fills the whole bar
-    // height; with "Alignment" it only fills the left group's height
-    // (a much smaller pill).
+  it("uses Bar grouping so the whole widget set renders as one pill", () => {
+    // Reverted from Alignment after the user's reference design
+    // showed a single pill, not three. Side effect: the focused-
+    // workspace chip fills the pill height (SelectableFrame ->
+    // ui.max_rect), which we accept — the chip's colour is what
+    // visually matters, set via theme.bar_accent below.
     const preset = buildPillPreset({
       monitorIndex: 0,
       monitorWidth: 1920,
       monitorHeight: 1080,
     });
-    expect(preset.grouping!.kind).toBe("Alignment");
+    expect(preset.grouping!.kind).toBe("Bar");
+  });
+
+  it("overrides theme.bar_accent to a light token for a cream chip on the dark pill", () => {
+    // Without this, the chip uses the user's accent (often a
+    // saturated colour that clashes with the pill background).
+    // Per-palette mapping: Base16 -> Base07, Catppuccin -> Lavender.
+    const base16 = buildPillPreset({
+      monitorIndex: 0,
+      monitorWidth: 1920,
+      monitorHeight: 1080,
+      currentTheme: { palette: "Base16", name: "Ashes" },
+    });
+    expect(base16.theme.bar_accent).toBe("Base07");
+    expect(base16.theme.palette).toBe("Base16");
+    expect(base16.theme.name).toBe("Ashes");
+
+    const catppuccin = buildPillPreset({
+      monitorIndex: 0,
+      monitorWidth: 1920,
+      monitorHeight: 1080,
+      currentTheme: { palette: "Catppuccin", name: "Mocha" },
+    });
+    expect(catppuccin.theme.bar_accent).toBe("Lavender");
+    expect(catppuccin.theme.palette).toBe("Catppuccin");
+    expect(catppuccin.theme.name).toBe("Mocha");
+  });
+
+  it("falls back to Base16 Ashes when there's no current theme or an unknown palette", () => {
+    const noTheme = buildPillPreset({
+      monitorIndex: 0,
+      monitorWidth: 1920,
+      monitorHeight: 1080,
+    });
+    expect(noTheme.theme).toEqual({
+      palette: "Base16",
+      name: "Ashes",
+      bar_accent: "Base07",
+    });
+
+    const customTheme = buildPillPreset({
+      monitorIndex: 0,
+      monitorWidth: 1920,
+      monitorHeight: 1080,
+      currentTheme: { palette: "Custom", base_palette: {} },
+    });
+    expect(customTheme.theme).toEqual({
+      palette: "Base16",
+      name: "Ashes",
+      bar_accent: "Base07",
+    });
   });
 
   it("reserves vertical work area on the targeted monitor", () => {

@@ -99,6 +99,14 @@ export interface PillBarInput {
   monitorIndex: number;
   monitorWidth: number;
   monitorHeight: number;
+  /** The user's current `theme` value from the bar config, if any.
+   *  The preset reads its palette to pick a matching light-accent
+   *  token (so the focused-workspace chip comes out cream against
+   *  the dark pill instead of using the theme's default accent,
+   *  which is often a saturated colour that clashes with the pill
+   *  background). Pass `null` / `undefined` to let the preset fall
+   *  back to Base16 Ashes with Base07 accent. */
+  currentTheme?: unknown;
 }
 
 export interface PillBarPatch {
@@ -112,20 +120,23 @@ export interface PillBarPatch {
   max_label_width: number;
   font_family: string;
   font_size: number;
+  /** Theme block — preset writes this to set a light bar_accent so
+   *  the focused-workspace chip comes out cream against the dark
+   *  pill. Palette + name preserved from the user's existing theme
+   *  when we know how to map; otherwise falls back to Base16 Ashes. */
+  theme: Record<string, unknown>;
   frame: {
     inner_margin: { x: number; y: number };
   };
   grouping: {
     /** Discriminator for komorebi-bar's `#[serde(tag = "kind")]`
      *  Grouping enum. Without this field komorebi-bar fails parse
-     *  with "missing field `kind`" and the bar never starts.
-     *
-     *  "Alignment" gives left / center / right widgets their own
-     *  content-sized pill — preferred over "Bar" because the
-     *  focused-workspace chip fills its parent's max_rect, and a
-     *  smaller parent (= smaller pill) means a more proportionate
-     *  chip. */
-    kind: "Alignment";
+     *  with "missing field `kind`" and the bar never starts. "Bar"
+     *  renders the whole widget set as ONE pill — matches the
+     *  reference design's single-pill layout. (We tried "Alignment"
+     *  briefly to dodge the chip-fills-pill-height issue but the
+     *  user's design has one pill, not three.) */
+    kind: "Bar";
     rounding: number;
     style: string;
     transparency_alpha: number;
@@ -150,6 +161,7 @@ export function buildPillPreset(input: PillBarInput): PillBarPatch {
     Math.min(targetWidth, MAX_PILL_WIDTH, maxAllowed),
   );
   const sidePadding = Math.round((input.monitorWidth - pillWidth) / 2);
+  const theme = buildPillTheme(input.currentTheme);
 
   return {
     position: {
@@ -168,11 +180,12 @@ export function buildPillPreset(input: PillBarInput): PillBarPatch {
     max_label_width: MAX_LABEL_WIDTH,
     font_family: PILL_FONT_FAMILY,
     font_size: PILL_FONT_SIZE,
+    theme,
     frame: {
       inner_margin: { x: FRAME_INNER_MARGIN_X, y: FRAME_INNER_MARGIN_Y },
     },
     grouping: {
-      kind: "Alignment",
+      kind: "Bar",
       rounding: PILL_ROUNDING,
       style: PILL_STYLE,
       transparency_alpha: PILL_TRANSPARENCY,
@@ -195,4 +208,48 @@ export function buildPillPreset(input: PillBarInput): PillBarPatch {
       },
     },
   };
+}
+
+/**
+ * Build the theme block the preset will write. The goal is to
+ * guarantee a CREAM/light focused-workspace chip against the dark
+ * pill — komorebi-bar's `SelectableFrame` fill is driven by
+ * `theme.bar_accent`, so this is the only knob that controls chip
+ * colour. The value type for `bar_accent` is palette-dependent:
+ * Base16 wants a `BaseNN` token, Catppuccin wants a colour name like
+ * `Lavender`. So we read the user's current palette and pick the
+ * matching light-accent token; for unknown shapes we fall back to
+ * Base16 Ashes.
+ */
+function buildPillTheme(current: unknown): Record<string, unknown> {
+  const cur = isRecord(current) ? current : {};
+  const palette = typeof cur.palette === "string" ? cur.palette : null;
+
+  if (palette === "Base16") {
+    return {
+      ...cur,
+      // Base07 is the lightest base16 base colour ("light highlight"),
+      // which reads as cream against most Base16 dark themes.
+      bar_accent: "Base07",
+    };
+  }
+  if (palette === "Catppuccin") {
+    return {
+      ...cur,
+      // Lavender / Subtext1 read as soft cream against the dark
+      // Catppuccin palettes (Frappe / Macchiato / Mocha).
+      bar_accent: "Lavender",
+    };
+  }
+  // Unknown / Custom / missing — fall back to a known-good dark
+  // theme with cream accent so the design renders correctly.
+  return {
+    palette: "Base16",
+    name: "Ashes",
+    bar_accent: "Base07",
+  };
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
 }

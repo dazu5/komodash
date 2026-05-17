@@ -53,6 +53,9 @@ export default function BarConfigPage() {
       monitorIndex: targetIndex,
       monitorWidth: monitor?.width ?? 1920,
       monitorHeight: monitor?.height ?? 1080,
+      // Pass the current theme so the preset can preserve the user's
+      // palette + name and only override `bar_accent` for a cream chip.
+      currentTheme: (value as Record<string, unknown> | null)?.theme,
     });
     for (const [k, v] of Object.entries(patch)) {
       setField(k, v);
