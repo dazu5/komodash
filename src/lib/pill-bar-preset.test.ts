@@ -104,4 +104,26 @@ describe("buildPillPreset", () => {
     expect(monitor.work_area_offset.left).toBe(0);
     expect(monitor.work_area_offset.right).toBe(0);
   });
+
+  it("uses symmetric top/bottom offset so the work area stays within the screen", () => {
+    // Regression: komorebi/src/workspace.rs:633-636 applies offset as
+    //   with_offset.top    += offset.top
+    //   with_offset.bottom -= offset.bottom   (where bottom = HEIGHT)
+    // So an asymmetric `{top: N, bottom: 0}` pushes the work area
+    // N pixels DOWN without shrinking its height, causing windows to
+    // overflow past the screen edge. The fix is symmetric N/N: shifts
+    // the work area down by N while shrinking height by N, keeping
+    // the bottom edge anchored at the screen bottom.
+    const preset = buildPillPreset({
+      monitorIndex: 0,
+      monitorWidth: 1920,
+      monitorHeight: 1080,
+    });
+    const offset = (
+      preset.monitor as {
+        work_area_offset: { top: number; bottom: number };
+      }
+    ).work_area_offset;
+    expect(offset.bottom).toBe(offset.top);
+  });
 });

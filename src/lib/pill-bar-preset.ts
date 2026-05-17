@@ -100,10 +100,19 @@ export function buildPillPreset(input: PillBarInput): PillBarPatch {
     },
     transparency_alpha: PILL_TRANSPARENCY,
     monitor: {
+      // komorebi/src/workspace.rs:633-636 applies the offset as
+      //   with_offset.top    += offset.top
+      //   with_offset.bottom -= offset.bottom
+      // where `bottom` is HEIGHT (Rect naming again). An asymmetric
+      // `{top: N, bottom: 0}` pushes the work area down by N without
+      // shrinking its height — windows then overflow past the screen
+      // bottom. Symmetric N/N keeps the bottom edge anchored at the
+      // screen bottom, matching what MonitorPlacementWidget does for
+      // the bar's own monitor field.
       index: input.monitorIndex,
       work_area_offset: {
         top: WORK_AREA_TOP_RESERVE,
-        bottom: 0,
+        bottom: WORK_AREA_TOP_RESERVE,
         left: 0,
         right: 0,
       },
