@@ -2,41 +2,38 @@
  * Pill-style bar preset (issue #73).
  *
  * Produces a coordinated bar-config patch that turns komorebi-bar
- * into a centered, rounded, content-width pill — Mac-style — without
- * any upstream changes. Composed of fields komorebi-bar's schema
- * already exposes:
+ * into a centered, rounded, content-width pill — Mac-style — using
+ * only fields komorebi-bar's schema already exposes:
  *
- *   - `position.start` / `position.end`     bar window rect (see note)
+ *   - `position.end`                        bar width × height
+ *   - `margin.{top,left,right}`             vertical + horizontal offset
  *   - `grouping.rounding` + `grouping.style` rounded corners + shadow
  *   - `transparency_alpha`                  soften the outline
  *   - `monitor.work_area_offset.top`        reserve vertical space —
  *                                           corners stay tileable
  *
- * # `position.end` semantics
+ * # Two non-obvious komorebi-bar behaviours we work around
  *
- * The bar config's schema description for `end` reads "desired size
- * of the bar from the starting position", but komorebi-bar's source
- * (komorebi-bar/src/bar.rs, in `apply_config`) uses the values
- * verbatim as the right/bottom edges of a `Rect {left, top, right,
- * bottom}`. So `end.x` is the ABSOLUTE right-edge X coord (e.g. 1360
- * for a pill ending 1360 px from the screen-left), not the bar's
- * width. Same for `end.y` — absolute bottom edge.
+ * 1. **`Rect.right` is width, `Rect.bottom` is height.** Despite the
+ *    field names, `komorebi-layouts/src/rect.rs` docs spell it out
+ *    and `komorebi/src/windows_api.rs:611` passes them directly to
+ *    `SetWindowPos` as `cx`/`cy`. So `position.end.x` is the bar's
+ *    width, not its right-edge coord.
  *
- * # `margin` interaction
+ * 2. **`position.start.x/y` gets reset to monitor top-left** by
+ *    `update_monitor_coordinates` (komorebi-bar/src/bar.rs:832)
+ *    every time the bar processes a monitor-coords update, which
+ *    happens at least at startup. So we can't center via
+ *    `position.start.x`. The durable mechanism is `margin.left` +
+ *    `margin.right` — komorebi-bar applies those *after* the start
+ *    reset:
+ *      start.x += margin.left
+ *      end.x_width -= margin.left + margin.right
  *
- * komorebi-bar mutates `start.x += margin.left` and `end.x -=
- * margin.left + margin.right` — that's asymmetric and would shift
- * our explicit centering off. We emit a zero margin so the position
- * field is the single source of truth.
- *
- * # `position.start` and monitor reloads
- *
- * komorebi-bar overrides `position.start.x/y` to the monitor's
- * top-left whenever it processes a monitor-coords update — see
- * `update_monitor_coordinates` in bar.rs. For the common single-
- * monitor case this only fires at startup so our centering survives;
- * users who add/remove monitors at runtime may see the pill snap
- * back to the top-left of monitor 0 and need to reapply.
+ *    Symmetric left/right margin gives exact centering regardless of
+ *    which monitor the bar lives on (the bar uses the monitor's own
+ *    width via `MONITOR_RIGHT`, so it works for multi-monitor and
+ *    ultrawide alike).
  */
 
 const DEFAULT_PILL_WIDTH = 800;
@@ -58,8 +55,8 @@ export interface PillBarInput {
 
 export interface PillBarPatch {
   position: {
-    start: { x: number; y: number };
     end: { x: number; y: number };
+    start?: undefined;
   };
   margin: { top: number; bottom: number; left: number; right: number };
   grouping: {
@@ -82,16 +79,20 @@ export interface PillBarPatch {
 export function buildPillPreset(input: PillBarInput): PillBarPatch {
   const maxAllowed = Math.max(0, input.monitorWidth - 2 * MIN_SIDE_MARGIN);
   const pillWidth = Math.min(DEFAULT_PILL_WIDTH, maxAllowed);
-  const startX = Math.round((input.monitorWidth - pillWidth) / 2);
-  const endX = startX + pillWidth;
-  const endY = TOP_MARGIN_PX + BAR_HEIGHT_PX;
+  const sidePadding = Math.round((input.monitorWidth - pillWidth) / 2);
 
   return {
     position: {
-      start: { x: startX, y: TOP_MARGIN_PX },
-      end: { x: endX, y: endY },
+      // start omitted intentionally: komorebi-bar defaults it to the
+      // monitor's top-left, and overrides any value we set anyway.
+      end: { x: input.monitorWidth, y: BAR_HEIGHT_PX },
     },
-    margin: { top: 0, bottom: 0, left: 0, right: 0 },
+    margin: {
+      top: TOP_MARGIN_PX,
+      bottom: 0,
+      left: sidePadding,
+      right: sidePadding,
+    },
     grouping: {
       rounding: PILL_ROUNDING,
       style: PILL_STYLE,
