@@ -2,74 +2,78 @@ import { describe, expect, it } from "vitest";
 
 import { buildPillPreset } from "./pill-bar-preset";
 
+/**
+ * komorebi-bar's `Rect` struct (in komorebi-layouts/src/rect.rs)
+ * names its fields `left, top, right, bottom`, but the doc comments
+ * make clear that `right` is WIDTH and `bottom` is HEIGHT — and the
+ * Win32 boundary in windows_api.rs:611 passes them directly to
+ * SetWindowPos as `cx` and `cy`. So in this codebase: position.end.x
+ * is the bar's width, position.end.y is its height.
+ *
+ * Centering via `position.start.x` doesn't survive because
+ * bar.rs:832's `update_monitor_coordinates` overrides start to the
+ * monitor's top-left every time it fires (which is at least on
+ * startup). The only durable way to offset the bar from the monitor
+ * edge is via `margin.{top,left,right}` — komorebi-bar adds those
+ * after the override.
+ */
 describe("buildPillPreset", () => {
-  it("emits position.end as absolute screen-edge coords, not size", () => {
-    // Regression: komorebi-bar treats position.end as the absolute
-    // right / bottom edge of the bar rect (Rect {left, top, right,
-    // bottom}), NOT as width / height from start. The schema docs say
-    // "desired size from starting position" but the source proves
-    // otherwise (komorebi-bar/src/bar.rs:613). If we ever pass width
-    // here again, the resulting bar is too narrow and invisible.
+  it("emits position.end as (monitor width, bar height) — komorebi-bar's `right` field is width, `bottom` is height", () => {
     const preset = buildPillPreset({
       monitorIndex: 0,
       monitorWidth: 1920,
       monitorHeight: 1080,
     });
-    const start = preset.position!.start as { x: number; y: number };
-    const end = preset.position!.end as { x: number; y: number };
-    const width = end.x - start.x;
-    const height = end.y - start.y;
-    expect(width).toBeGreaterThan(200); // sanity floor — pill is wider than 200 px
-    expect(height).toBeGreaterThan(20);
+    expect((preset.position!.end as { x: number }).x).toBe(1920);
+    expect((preset.position!.end as { y: number }).y).toBe(32);
   });
 
-  it("centers the bar horizontally on the monitor", () => {
+  it("centers the bar via symmetric margin.left / margin.right (the only durable mechanism)", () => {
     const preset = buildPillPreset({
       monitorIndex: 0,
       monitorWidth: 1920,
       monitorHeight: 1080,
     });
-    const start = preset.position!.start as { x: number };
-    const end = preset.position!.end as { x: number };
-    const center = (start.x + end.x) / 2;
-    expect(center).toBeCloseTo(1920 / 2, 0);
+    const m = preset.margin!;
+    expect(m.left).toBe(m.right);
+    // After komorebi-bar applies margin: end.x_width = monitorWidth - left - right
+    // We want that to equal pillWidth (800 for 1920 monitor)
+    expect(1920 - m.left - m.right).toBe(800);
   });
 
-  it("caps pill width so there's at least 50px breathing room each side", () => {
+  it("caps pill width so there's at least 50px breathing room each side on narrow monitors", () => {
     const preset = buildPillPreset({
       monitorIndex: 0,
       monitorWidth: 800,
       monitorHeight: 1080,
     });
-    const start = preset.position!.start as { x: number };
-    const end = preset.position!.end as { x: number };
-    expect(start.x).toBeGreaterThanOrEqual(50);
-    expect(end.x).toBeLessThanOrEqual(800 - 50);
+    const m = preset.margin!;
+    expect(m.left).toBeGreaterThanOrEqual(50);
+    expect(m.right).toBeGreaterThanOrEqual(50);
+    const pillWidth = 800 - m.left - m.right;
+    expect(pillWidth).toBeGreaterThan(0);
   });
 
-  it("clears margin to zero so position is honored verbatim", () => {
-    // Regression: komorebi-bar mutates `start.x += margin.left` and
-    // `end.x -= margin.left + margin.right`, which is asymmetric and
-    // breaks the explicit centering computed via position. Belt-and-
-    // braces: emit zero margin so position is the single source of
-    // truth.
+  it("offsets vertically via margin.top, not position.start (which gets overridden)", () => {
     const preset = buildPillPreset({
       monitorIndex: 0,
       monitorWidth: 1920,
       monitorHeight: 1080,
     });
-    expect(preset.margin).toEqual({ top: 0, bottom: 0, left: 0, right: 0 });
+    expect(preset.margin!.top).toBeGreaterThan(0);
+    expect(preset.margin!.top).toBeLessThan(50);
   });
 
-  it("sets a small top margin via position.start.y, not the margin field", () => {
+  it("omits position.start so komorebi-bar uses monitor.left/top defaults — works for any monitor index without recomputing", () => {
     const preset = buildPillPreset({
       monitorIndex: 0,
       monitorWidth: 1920,
       monitorHeight: 1080,
     });
-    const start = preset.position!.start as { y: number };
-    expect(start.y).toBeGreaterThan(0);
-    expect(start.y).toBeLessThan(50);
+    // start is either undefined entirely (preferred) or null — never an
+    // explicit (0,0) which would still get reset by komorebi-bar but
+    // looks deliberate-but-wrong to a reader.
+    expect(preset.position!.start).toBeUndefined();
   });
 
   it("sets rounded corners, shadow, and transparency", () => {
