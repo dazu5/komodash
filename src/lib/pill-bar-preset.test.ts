@@ -25,7 +25,7 @@ describe("buildPillPreset", () => {
       monitorHeight: 1080,
     });
     expect((preset.position!.end as { x: number }).x).toBe(1920);
-    expect((preset.position!.end as { y: number }).y).toBe(32);
+    expect((preset.position!.end as { y: number }).y).toBe(36);
   });
 
   it("centers the bar via symmetric margin.left / margin.right (the only durable mechanism)", () => {
@@ -36,9 +36,36 @@ describe("buildPillPreset", () => {
     });
     const m = preset.margin!;
     expect(m.left).toBe(m.right);
-    // After komorebi-bar applies margin: end.x_width = monitorWidth - left - right
-    // We want that to equal pillWidth (800 for 1920 monitor)
-    expect(1920 - m.left - m.right).toBe(800);
+  });
+
+  it("scales pill width with the monitor (~70% target), clamped to a comfortable range", () => {
+    // Narrow monitor: floor at MIN
+    const narrow = buildPillPreset({
+      monitorIndex: 0,
+      monitorWidth: 1366,
+      monitorHeight: 768,
+    });
+    const narrowWidth = 1366 - 2 * narrow.margin!.left;
+    expect(narrowWidth).toBeGreaterThanOrEqual(900);
+
+    // Standard 1920p: ~70% target lands in the middle
+    const standard = buildPillPreset({
+      monitorIndex: 0,
+      monitorWidth: 1920,
+      monitorHeight: 1080,
+    });
+    const standardWidth = 1920 - 2 * standard.margin!.left;
+    expect(standardWidth).toBeGreaterThan(1000);
+    expect(standardWidth).toBeLessThanOrEqual(1500);
+
+    // Ultrawide: cap at MAX
+    const ultra = buildPillPreset({
+      monitorIndex: 0,
+      monitorWidth: 3440,
+      monitorHeight: 1440,
+    });
+    const ultraWidth = 3440 - 2 * ultra.margin!.left;
+    expect(ultraWidth).toBeLessThanOrEqual(1500);
   });
 
   it("caps pill width so there's at least 50px breathing room each side on narrow monitors", () => {
@@ -70,9 +97,6 @@ describe("buildPillPreset", () => {
       monitorWidth: 1920,
       monitorHeight: 1080,
     });
-    // start is either undefined entirely (preferred) or null — never an
-    // explicit (0,0) which would still get reset by komorebi-bar but
-    // looks deliberate-but-wrong to a reader.
     expect(preset.position!.start).toBeUndefined();
   });
 
@@ -139,5 +163,31 @@ describe("buildPillPreset", () => {
       }
     ).work_area_offset;
     expect(offset.bottom).toBe(offset.top);
+  });
+
+  it("adds widget spacing, label truncation, and inner frame margin so widgets aren't cramped", () => {
+    // The bare-minimum-fields version of this preset rendered a
+    // visibly cramped bar (overlapping widgets, no breathing room).
+    // Pinning the four typography fields ensures the preset always
+    // ships the spacing it needs.
+    const preset = buildPillPreset({
+      monitorIndex: 0,
+      monitorWidth: 1920,
+      monitorHeight: 1080,
+    });
+    expect(preset.widget_spacing).toBeGreaterThanOrEqual(10);
+    expect(preset.max_label_width).toBeGreaterThan(0);
+    expect(preset.frame.inner_margin.x).toBeGreaterThan(0);
+    expect(preset.frame.inner_margin.y).toBeGreaterThanOrEqual(0);
+  });
+
+  it("sets explicit `height` so it stays in sync with position.end.y", () => {
+    const preset = buildPillPreset({
+      monitorIndex: 0,
+      monitorWidth: 1920,
+      monitorHeight: 1080,
+    });
+    expect(preset.height).toBe(36);
+    expect(preset.height).toBe((preset.position!.end as { y: number }).y);
   });
 });
