@@ -42,22 +42,34 @@ const MIN_PILL_WIDTH = 900;
 const MAX_PILL_WIDTH = 1500;
 /** Pill width target — share of monitor width, clamped to MIN/MAX. */
 const PILL_WIDTH_RATIO = 0.7;
-const TOP_MARGIN_PX = 8;
-const BAR_HEIGHT_PX = 36;
-const PILL_ROUNDING = 18;
-const PILL_STYLE = "DefaultWithShadowB4O0S3";
-const PILL_TRANSPARENCY = 230;
+const TOP_MARGIN_PX = 10;
+const BAR_HEIGHT_PX = 48;
+/** Half the bar height — gives the bar a true pill shape (semi-
+ *  circular ends) rather than a softened rectangle. */
+const PILL_ROUNDING = 24;
+/** macOS-style: clean container, no drop shadow. The translucency +
+ *  rounded shape carry the visual interest. komorebi-bar's other
+ *  shadow styles read as heavy/dated in a system-bar context. */
+const PILL_STYLE = "Default";
+/** Lower alpha (~70%) for a glass / translucent feel. egui doesn't
+ *  do backdrop blur, so true glassmorphism isn't available — this is
+ *  the closest approximation. */
+const PILL_TRANSPARENCY = 180;
 /** Truncate long window-title labels so one widget can't dominate
  *  the pill's horizontal real estate. Matches what a modern OS bar
  *  does instead of growing without bound. */
 const MAX_LABEL_WIDTH = 180;
-/** Gap between adjacent widgets — gives the pill an iOS-style roomy
- *  feel rather than the cramped default. */
-const WIDGET_SPACING = 14;
+/** Gap between adjacent widgets. */
+const WIDGET_SPACING = 16;
 /** Inner padding inside the pill's rounded background so widget
  *  content doesn't touch the curved edge. */
-const FRAME_INNER_MARGIN_X = 12;
-const FRAME_INNER_MARGIN_Y = 4;
+const FRAME_INNER_MARGIN_X = 18;
+const FRAME_INNER_MARGIN_Y = 6;
+/** Inter is widely available on modern Windows installs (ships with
+ *  some apps, common dev font). egui falls back to system default if
+ *  it isn't installed — no parse failure. */
+const PILL_FONT_FAMILY = "Inter";
+const PILL_FONT_SIZE = 13;
 /** Vertical work-area reservation. Symmetric so the work area's
  *  bottom edge stays anchored at the screen bottom — see the
  *  Rect-naming note above. */
@@ -78,6 +90,8 @@ export interface PillBarPatch {
   height: number;
   widget_spacing: number;
   max_label_width: number;
+  font_family: string;
+  font_size: number;
   frame: {
     inner_margin: { x: number; y: number };
   };
@@ -127,6 +141,8 @@ export function buildPillPreset(input: PillBarInput): PillBarPatch {
     height: BAR_HEIGHT_PX,
     widget_spacing: WIDGET_SPACING,
     max_label_width: MAX_LABEL_WIDTH,
+    font_family: PILL_FONT_FAMILY,
+    font_size: PILL_FONT_SIZE,
     frame: {
       inner_margin: { x: FRAME_INNER_MARGIN_X, y: FRAME_INNER_MARGIN_Y },
     },

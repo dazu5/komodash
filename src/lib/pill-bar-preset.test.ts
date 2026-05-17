@@ -25,7 +25,7 @@ describe("buildPillPreset", () => {
       monitorHeight: 1080,
     });
     expect((preset.position!.end as { x: number }).x).toBe(1920);
-    expect((preset.position!.end as { y: number }).y).toBe(36);
+    expect((preset.position!.end as { y: number }).y).toBe(48);
   });
 
   it("centers the bar via symmetric margin.left / margin.right (the only durable mechanism)", () => {
@@ -100,17 +100,33 @@ describe("buildPillPreset", () => {
     expect(preset.position!.start).toBeUndefined();
   });
 
-  it("sets rounded corners, shadow, and transparency", () => {
+  it("sets rounded corners — radius equals half the bar height for a true pill shape", () => {
     const preset = buildPillPreset({
       monitorIndex: 0,
       monitorWidth: 1920,
       monitorHeight: 1080,
     });
-    expect(preset.grouping!.rounding).toBe(18);
-    expect(preset.grouping!.style).toBe("DefaultWithShadowB4O0S3");
-    expect(typeof preset.transparency_alpha).toBe("number");
-    expect(preset.transparency_alpha!).toBeGreaterThan(0);
-    expect(preset.transparency_alpha!).toBeLessThanOrEqual(255);
+    expect(preset.grouping!.rounding).toBe(24);
+    expect(preset.grouping!.rounding * 2).toBe(preset.height);
+  });
+
+  it("uses no drop shadow (clean macOS-style container, glass effect carries the visual interest)", () => {
+    const preset = buildPillPreset({
+      monitorIndex: 0,
+      monitorWidth: 1920,
+      monitorHeight: 1080,
+    });
+    expect(preset.grouping!.style).toBe("Default");
+  });
+
+  it("uses translucent transparency for a glass / Mac feel — neither fully opaque nor invisible", () => {
+    const preset = buildPillPreset({
+      monitorIndex: 0,
+      monitorWidth: 1920,
+      monitorHeight: 1080,
+    });
+    expect(preset.transparency_alpha).toBeGreaterThan(120);
+    expect(preset.transparency_alpha).toBeLessThan(220);
   });
 
   it("includes grouping.kind so komorebi-bar can deserialize the tagged enum", () => {
@@ -187,7 +203,17 @@ describe("buildPillPreset", () => {
       monitorWidth: 1920,
       monitorHeight: 1080,
     });
-    expect(preset.height).toBe(36);
+    expect(preset.height).toBe(48);
     expect(preset.height).toBe((preset.position!.end as { y: number }).y);
+  });
+
+  it("sets Inter as the font family — modern Mac/iOS aesthetic, falls back to system default if not installed", () => {
+    const preset = buildPillPreset({
+      monitorIndex: 0,
+      monitorWidth: 1920,
+      monitorHeight: 1080,
+    });
+    expect(preset.font_family).toBe("Inter");
+    expect(preset.font_size).toBeGreaterThanOrEqual(12);
   });
 });
